@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pdfplumber
 
 # === Initialize Firebase ===
-cred = credentials.Certificate(r"D:\Dessert Marine Services\Pricing Software\vendordataparser-8ceab-firebase-adminsdk-fbsvc-297b1e5069.json")
+cred = credentials.Certificate(st.secrets["firebase"])
 if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
 db = firestore.client()
