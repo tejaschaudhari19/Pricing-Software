@@ -2256,21 +2256,43 @@ def main_page():
                         st.session_state.selected_vendor = vendor
                         st.rerun()
 
-        # === Search Vendor Data Section ===
+    # === Search Vendor Data Section ===
     st.subheader("Search Vendor Data")
     col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
 
     with col1:
         pol_input = st.selectbox("POL (Type to search)", [""] + st.session_state.pol_suggestions, format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
     with col2:
-        # Dynamic filtering for POD/PORT based on user input
-        pod_input = st.text_input("POD/PORT (Type to search)", "", help="Start typing to filter port suggestions")
-        if pod_input:
-            filtered_pods = [pod for pod in st.session_state.pod_suggestions if pod_input.lower() in pod.lower()]
-        else:
-            filtered_pods = st.session_state.pod_suggestions
-        pod_selected = st.selectbox("Select POD/PORT", [""] + sorted(filtered_pods), format_func=lambda x: "" if x == "" else x, key="pod_select", help="Select from filtered ports")
-        pod_input = pod_selected if pod_selected != "" else pod_input
+        # Initialize session state for POD input
+        if 'pod_typed_input' not in st.session_state:
+            st.session_state.pod_typed_input = ""
+        
+        # Get current selectbox value
+        pod_options = [""] + st.session_state.pod_suggestions
+        if st.session_state.pod_typed_input:
+            pod_options = [""] + [pod for pod in st.session_state.pod_suggestions if st.session_state.pod_typed_input.lower() in pod.lower()]
+            pod_options = sorted(pod_options)
+        
+        def update_pod_typed_input():
+            # Update typed input based on selectbox selection
+            selected = st.session_state.pod_select
+            st.session_state.pod_typed_input = selected if selected != "" else st.session_state.pod_typed_input
+
+        pod_input = st.selectbox(
+            "POD/PORT (Type to search)",
+            pod_options,
+            format_func=lambda x: "" if x == "" else x,
+            key="pod_select",
+            help="Start typing to filter port suggestions",
+            on_change=update_pod_typed_input
+        )
+
+        # Update typed input when user types in the selectbox
+        if pod_input != st.session_state.pod_typed_input and pod_input != "":
+            st.session_state.pod_typed_input = pod_input
+            # Trigger rerun to refresh suggestions
+            if pod_input:
+                st.rerun()
     with col3:
         carrier_input = st.selectbox("Carrier (Type to search)", [""] + vendors, format_func=lambda x: "" if x == "" else x, help="Start typing to see vendor names")
     with col4:
@@ -2294,19 +2316,7 @@ def main_page():
                 st.session_state.search_results = results
                 if st.session_state.search_results.empty:
                     st.info("No matching records found.")
-
-    if not st.session_state.search_results.empty:
-        st.subheader("Search Results")
-        display_columns = ['Vendor', 'Month-Year', 'POL', 'PORT'] + [e for e in equipment if e in st.session_state.search_results.columns]
-        additional_cols = ['REMARKS', 'ROUTING', 'TRANSIT TIME', 'VALIDITY', 'SERVICE NAME', 'SERVICE', 'EXPIRY DATE', 'Sheet', 'IMO SC PER TEU', '20 Haz', '40 Haz', "40'HRF"]
-        display_columns.extend([c for c in additional_cols if c in st.session_state.search_results.columns])
-        # Ensure POL is displayed consistently and rename POD to PORT for HMM MRG
-        if 'POL' in st.session_state.search_results.columns:
-            st.session_state.search_results['POL'] = st.session_state.search_results['POL'].apply(standardize_pol)
-        if 'POD' in st.session_state.search_results.columns:
-            st.session_state.search_results = st.session_state.search_results.rename(columns={'POD': 'PORT'})
-        st.dataframe(st.session_state.search_results[display_columns])
-
+                    
 def vendor_page():
     vendor = st.session_state.selected_vendor
     st.title(f"{vendor} Data")
