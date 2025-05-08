@@ -2256,27 +2256,30 @@ def main_page():
                         st.session_state.selected_vendor = vendor
                         st.rerun()
 
-    # === Search Vendor Data Section ===
+        # === Search Vendor Data Section ===
     st.subheader("Search Vendor Data")
     col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
 
     with col1:
         pol_input = st.selectbox("POL (Type to search)", [""] + st.session_state.pol_suggestions, format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
     with col2:
-        # Initialize session state for POD input
-        if 'pod_typed_input' not in st.session_state:
-            st.session_state.pod_typed_input = ""
-        
-        # Get current selectbox value
-        pod_options = [""] + st.session_state.pod_suggestions
-        if st.session_state.pod_typed_input:
-            pod_options = [""] + [pod for pod in st.session_state.pod_suggestions if st.session_state.pod_typed_input.lower() in pod.lower()]
-            pod_options = sorted(pod_options)
-        
-        def update_pod_typed_input():
-            # Update typed input based on selectbox selection
+        # Initialize session state for POD filter
+        if 'pod_filter' not in st.session_state:
+            st.session_state.pod_filter = ""
+
+        # Get filtered POD options based on typed filter
+        def update_pod_filter():
+            # Update filter when selectbox changes
             selected = st.session_state.pod_select
-            st.session_state.pod_typed_input = selected if selected != "" else st.session_state.pod_typed_input
+            if selected != "":
+                st.session_state.pod_filter = selected
+                st.rerun()
+
+        # Filter suggestions based on pod_filter
+        pod_options = [""] + st.session_state.pod_suggestions
+        if st.session_state.pod_filter:
+            pod_options = [""] + [pod for pod in st.session_state.pod_suggestions if st.session_state.pod_filter.lower() in pod.lower()]
+            pod_options = sorted(pod_options)
 
         pod_input = st.selectbox(
             "POD/PORT (Type to search)",
@@ -2284,14 +2287,13 @@ def main_page():
             format_func=lambda x: "" if x == "" else x,
             key="pod_select",
             help="Start typing to filter port suggestions",
-            on_change=update_pod_typed_input
+            on_change=update_pod_filter
         )
 
-        # Update typed input when user types in the selectbox
-        if pod_input != st.session_state.pod_typed_input and pod_input != "":
-            st.session_state.pod_typed_input = pod_input
-            # Trigger rerun to refresh suggestions
-            if pod_input:
+        # Sync typed input with filter
+        if pod_input != st.session_state.pod_filter:
+            st.session_state.pod_filter = pod_input if pod_input else ""
+            if pod_input:  # Only rerun if there's input to filter
                 st.rerun()
     with col3:
         carrier_input = st.selectbox("Carrier (Type to search)", [""] + vendors, format_func=lambda x: "" if x == "" else x, help="Start typing to see vendor names")
@@ -2316,7 +2318,7 @@ def main_page():
                 st.session_state.search_results = results
                 if st.session_state.search_results.empty:
                     st.info("No matching records found.")
-                    
+
 def vendor_page():
     vendor = st.session_state.selected_vendor
     st.title(f"{vendor} Data")
