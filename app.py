@@ -2263,9 +2263,9 @@ def main_page():
     with col1:
         pol_input = st.selectbox("POL (Type to search)", [""] + st.session_state.pol_suggestions, format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
     with col2:
-        carrier_input = st.selectbox("Carrier (Type to search)", [""] + vendors, format_func=lambda x: "" if x == "" else x, help="Start typing to see vendor names")
-    with col3:
         pod_input = st.selectbox("POD/PORT (Type to search)", [""] + st.session_state.pod_suggestions, format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
+    with col3:
+        carrier_input = st.selectbox("Carrier (Type to search)", [""] + vendors, format_func=lambda x: "" if x == "" else x, help="Start typing to see vendor names")
     with col4:
         st.write("Equipment")
         with st.container():
