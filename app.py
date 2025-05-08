@@ -2256,14 +2256,21 @@ def main_page():
                         st.session_state.selected_vendor = vendor
                         st.rerun()
 
-    # === Search Vendor Data Section ===
+        # === Search Vendor Data Section ===
     st.subheader("Search Vendor Data")
     col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
 
     with col1:
         pol_input = st.selectbox("POL (Type to search)", [""] + st.session_state.pol_suggestions, format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
     with col2:
-        pod_input = st.selectbox("POD/PORT (Type to search)", [""] + st.session_state.pod_suggestions, format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
+        # Dynamic filtering for POD/PORT based on user input
+        pod_input = st.text_input("POD/PORT (Type to search)", "", help="Start typing to filter port suggestions")
+        if pod_input:
+            filtered_pods = [pod for pod in st.session_state.pod_suggestions if pod_input.lower() in pod.lower()]
+        else:
+            filtered_pods = st.session_state.pod_suggestions
+        pod_selected = st.selectbox("Select POD/PORT", [""] + sorted(filtered_pods), format_func=lambda x: "" if x == "" else x, key="pod_select", help="Select from filtered ports")
+        pod_input = pod_selected if pod_selected != "" else pod_input
     with col3:
         carrier_input = st.selectbox("Carrier (Type to search)", [""] + vendors, format_func=lambda x: "" if x == "" else x, help="Start typing to see vendor names")
     with col4:
