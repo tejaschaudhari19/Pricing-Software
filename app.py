@@ -363,52 +363,22 @@ def parse_wan_hai(file, month_year):
         print(f"Error parsing Wan Hai file: {str(e)}")
         return pd.DataFrame(), []
 
-def clean_numeric(series):
-    """Clean numeric columns by converting to numeric and handling errors."""
-    import pandas as pd
-    return pd.to_numeric(series, errors='coerce')
-
-def standardize_pol(pol):
-    """Standardize POL names."""
-    return str(pol).strip().title()
-
 def parse_one(file, month_year):
-    import pandas as pd
-    from datetime import datetime
-
     data = []
     info = []
     try:
-        # Parse month_year to extract month
-        try:
-            month = datetime.strptime(month_year, '%Y-%m').strftime('%B').lower()
-        except ValueError:
-            try:
-                month = datetime.strptime(month_year, '%Y-%b').strftime('%B').lower()
-            except ValueError:
-                try:
-                    month = datetime.strptime(month_year, '%B %Y').strftime('%B').lower()
-                except ValueError:
-                    month = ''.join([c for c in month_year.lower() if c.isalpha()])
-        print(f"Parsed month: {month}")
-
         # Load Excel file to get all sheet names
         xl = pd.ExcelFile(file)
         sheets = xl.sheet_names
-        print(f"Sheets found: {sheets}")
 
         for sheet_name in sheets:
             sheet_name_lower = sheet_name.lower().strip()
-
-            # Skip LATAM and LUX Service for LAEC in April
-            if month == "april" and (sheet_name_lower == "latam" or (sheet_name_lower.startswith("lux") and "laec" in sheet_name_lower)):
-                print(f"Skipping sheet {sheet_name} for April file")
-                continue
 
             # === FAREAST and GULF ===
             if "fareast" in sheet_name_lower and "gulf" in sheet_name_lower:
                 try:
                     df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
+                    # Extract remarks before data table
                     remarks = []
                     data_start_row = None
                     for idx, row in df_raw.iterrows():
@@ -426,55 +396,85 @@ def parse_one(file, month_year):
                         print(f"No data table found in FAREAST and GULF sheet")
                         continue
                     df_fg = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
+                    # Clean column names
                     df_fg.columns = df_fg.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
+                    # Print raw column names for debugging
                     print(f"FAREAST and GULF columns: {list(df_fg.columns)}")
-                    col_map = {
-                        'FPD': 'PORT',
-                        "20'D": '20',
-                        "40'D": '40STD',
-                        'HCD': '40HC',
-                        'Rate Structure': 'REMARKS'
-                    }
-                    available_cols = [col for col in col_map.keys() if col in df_fg.columns]
-                    if not available_cols:
-                        print(f"No matching columns in FAREAST and GULF")
+                    # Map columns
+                    col_map = {}
+                    for col in df_fg.columns:
+                        col_lower = col.lower().strip()
+                        if any(k in col_lower for k in ['fpd', 'port', 'dest', 'destination']):
+                            col_map[col] = 'PORT'
+                        elif any(k in col_lower for k in ["20'", '20d', '20dc', '20 dc', '20 ', "20'd"]):
+                            col_map[col] = '20'
+                        elif any(k in col_lower for k in ['40hc', 'hcd', '40 hc', '40high', '40 high']):
+                            col_map[col] = '40HC'
+                        elif any(k in col_lower for k in ["40'", '40d', '40std', '40 std', '40 ', "40'd"]):
+                            col_map[col] = '40STD'
+                        elif 'country' in col_lower:
+                            col_map[col] = 'POD COUNTRY'
+                        elif any(k in col_lower for k in ['remark', 'rate structure', 'surcharges group']):
+                            col_map[col] = 'REMARKS'
+                    # Validate required columns
+                    required_cols = ['PORT', '20', '40STD', '40HC']
+                    if not all(k in col_map.values() for k in required_cols):
+                        print(f"Missing required columns in FAREAST and GULF: {required_cols}, Mapped: {col_map}")
                         continue
-                    parsed_fg = df_fg[available_cols].rename(columns=col_map)
+                    parsed_fg = df_fg[list(col_map.keys())].rename(columns=col_map)
+                    # Ensure PORT column is valid
                     if 'PORT' not in parsed_fg.columns:
                         print("PORT column missing in FAREAST and GULF after mapping")
                         continue
-                    parsed_fg = parsed_fg[parsed_fg['PORT'].notna()]
+                    # Debug DataFrame state
                     print(f"FAREAST and GULF before filtering: {parsed_fg.shape}")
-                    parsed_fg = parsed_fg[parsed_fg['PORT'].astype(str).str.strip() != '']
-                    parsed_fg = parsed_fg[~parsed_fg['PORT'].astype(str).str.lower().eq('port')]
-                    parsed_fg = parsed_fg[
-                        parsed_fg[['20', '40STD', '40HC']].apply(
-                            lambda x: pd.to_numeric(x, errors='coerce').notna().sum() > 0, axis=1
-                        )
-                    ]
-                    parsed_fg = parsed_fg[~parsed_fg['PORT'].astype(str).str.lower().str.contains('total|summary|footer', na=False)]
+                    # Filter rows with valid PORT
+                    parsed_fg = parsed_fg[parsed_fg['PORT'].notna()]
+                    print(f"FAREAST and GULF after notna filter: {parsed_fg.shape}")
                     if parsed_fg.empty:
-                        print("No valid data in FAREAST and GULF after filtering")
+                        print("No valid PORT data in FAREAST and GULF after notna filter")
                         continue
-                    parsed_fg['PORT'] = parsed_fg['PORT'].astype(str).str.strip()
+                    try:
+                        parsed_fg = parsed_fg[parsed_fg['PORT'].astype(str).str.strip() != '']
+                        print(f"FAREAST and GULF after strip filter: {parsed_fg.shape}")
+                        if parsed_fg.empty:
+                            print("No valid PORT data in FAREAST and GULF after strip filter")
+                            continue
+                        parsed_fg = parsed_fg[~parsed_fg['PORT'].astype(str).str.lower().eq('port')]
+                        print(f"FAREAST and GULF after port filter: {parsed_fg.shape}")
+                        if parsed_fg.empty:
+                            print("No valid data in FAREAST and GULF after port filter")
+                            continue
+                        parsed_fg['PORT'] = parsed_fg['PORT'].astype(str).str.strip()
+                    except Exception as e:
+                        print(f"Error in FAREAST and GULF filtering: {str(e)}")
+                        continue
+                    # Clean numeric columns with error handling
                     for col in ['20', '40STD', '40HC']:
                         if col in parsed_fg.columns:
-                            parsed_fg[col] = clean_numeric(parsed_fg[col])
+                            try:
+                                parsed_fg[col] = clean_numeric(parsed_fg[col])
+                            except Exception as e:
+                                print(f"Error cleaning numeric column {col} in FAREAST and GULF: {str(e)}")
+                                parsed_fg[col] = pd.NA
                         else:
                             parsed_fg[col] = pd.NA
-                    parsed_fg['REMARKS'] = '; '.join(remarks) if remarks else ''
-                    parsed_fg['Sheet'] = sheet_name
+                    # Handle other columns safely
+                    try:
+                        parsed_fg['POD COUNTRY'] = parsed_fg.get('POD COUNTRY', '').astype(str).str.strip().replace('nan', '')
+                        if 'REMARKS' in parsed_fg.columns:
+                            parsed_fg['REMARKS'] = parsed_fg['REMARKS'].astype(str).str.strip().replace('nan', '')
+                    except Exception as e:
+                        print(f"Error processing POD COUNTRY or REMARKS in FAREAST and GULF: {str(e)}")
                     parsed_fg.insert(0, 'POL', 'Nhava Sheva')
                     parsed_fg['POL'] = parsed_fg['POL'].apply(standardize_pol)
-                    parsed_fg = parsed_fg[['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']]
+                    parsed_fg = parsed_fg.drop(columns=['POD COUNTRY'], errors='ignore')
                     print(f"FAREAST and GULF parsed successfully: {parsed_fg.shape}")
                     data.append(parsed_fg)
-                    if remarks:
-                        print(f"FAREAST and GULF remarks: {remarks}")
-                        info.append((sheet_name, remarks))
+                    info.extend(remarks)
                 except Exception as e:
                     print(f"Error parsing FAREAST and GULF sheet: {str(e)}")
-                    info.append((sheet_name, [f"Error parsing FAREAST and GULF sheet: {str(e)}"]))
+                    info.append(f"Error parsing FAREAST and GULF sheet: {str(e)}")
 
             # === EUR and MED ===
             elif "eur" in sheet_name_lower and "med" in sheet_name_lower:
@@ -499,7 +499,10 @@ def parse_one(file, month_year):
                         'OFT 20': '20',
                         'OFT 40': '40STD',
                         'OFT HC': '40HC',
-                        'Remarks': 'REMARKS'
+                        'Expiry Date': 'EXPIRY DATE',
+                        'Remarks': 'REMARKS',
+                        'Rate Structure': 'REMARKS',
+                        'Surcharges group': 'REMARKS'
                     }
                     available_cols = [col for col in col_map.keys() if col in df_eur_med.columns]
                     if not available_cols:
@@ -510,33 +513,24 @@ def parse_one(file, month_year):
                     parsed_eur_med = parsed_eur_med[parsed_eur_med['PORT'].notna()]
                     parsed_eur_med = parsed_eur_med[parsed_eur_med['PORT'].astype(str).str.strip() != '']
                     parsed_eur_med = parsed_eur_med[~parsed_eur_med['PORT'].astype(str).str.lower().eq('port')]
-                    parsed_eur_med = parsed_eur_med[
-                        parsed_eur_med[['20', '40STD', '40HC']].apply(
-                            lambda x: pd.to_numeric(x, errors='coerce').notna().sum() > 0, axis=1
-                        )
-                    ]
-                    parsed_eur_med = parsed_eur_med[~parsed_eur_med['PORT'].astype(str).str.lower().str.contains('total|summary|footer', na=False)]
-                    if parsed_eur_med.empty:
-                        continue
                     for col in ['20', '40STD', '40HC']:
                         if col in parsed_eur_med.columns:
                             parsed_eur_med[col] = clean_numeric(parsed_eur_med[col])
                         else:
                             parsed_eur_med[col] = pd.NA
                     parsed_eur_med['PORT'] = parsed_eur_med['PORT'].astype(str).str.strip()
-                    parsed_eur_med['REMARKS'] = '; '.join(remarks) if remarks else ''
-                    parsed_eur_med['Sheet'] = sheet_name
+                    if 'EXPIRY DATE' in parsed_eur_med.columns:
+                        parsed_eur_med['EXPIRY DATE'] = pd.to_datetime(parsed_eur_med['EXPIRY DATE'], errors='coerce').dt.strftime('%Y-%m-%d')
+                    if 'REMARKS' in parsed_eur_med.columns:
+                        parsed_eur_med['REMARKS'] = parsed_eur_med['REMARKS'].astype(str).str.strip().replace('nan', '')
                     parsed_eur_med.insert(0, 'POL', 'Nhava Sheva')
                     parsed_eur_med['POL'] = parsed_eur_med['POL'].apply(standardize_pol)
-                    parsed_eur_med = parsed_eur_med[['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']]
                     print(f"EUR and MED parsed successfully: {parsed_eur_med.shape}")
                     data.append(parsed_eur_med)
-                    if remarks:
-                        print(f"EUR and MED remarks: {remarks}")
-                        info.append((sheet_name, remarks))
+                    info.extend(remarks)
                 except Exception as e:
                     print(f"Error parsing EUR and MED sheet: {str(e)}")
-                    info.append((sheet_name, [f"Error parsing EUR and MED sheet: {str(e)}"]))
+                    info.append(f"Error parsing EUR and MED sheet: {str(e)}")
 
             # === AUS and NZ ===
             elif "aus" in sheet_name_lower and "nz" in sheet_name_lower:
@@ -560,33 +554,42 @@ def parse_one(file, month_year):
                         continue
                     df_aus_nz = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
                     df_aus_nz.columns = df_aus_nz.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
+                    # Print raw column names for debugging
                     print(f"AUS and NZ columns: {list(df_aus_nz.columns)}")
-                    col_map = {
-                        'PORT': 'PORT',
-                        "20'": '20',
-                        "40'": '40STD',
-                        "40'HC": '40HC',
-                        'Surcharges group': 'REMARKS'
-                    }
-                    available_cols = [col for col in col_map.keys() if col in df_aus_nz.columns]
-                    if not available_cols:
-                        print(f"No matching columns in AUS and NZ")
+                    # Map columns
+                    col_map = {}
+                    for col in df_aus_nz.columns:
+                        col_lower = col.lower().strip()
+                        if any(k in col_lower for k in ['port', 'dest', 'destination']):
+                            col_map[col] = 'PORT'
+                        elif any(k in col_lower for k in ["20'", '20d', '20dc', '20 dc', '20 ', "20'd"]):
+                            col_map[col] = '20'
+                        elif any(k in col_lower for k in ['40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"]):
+                            col_map[col] = '40HC'
+                        elif any(k in col_lower for k in ["40'", '40d', '40std', '40 std', '40 ', "40'd"]):
+                            col_map[col] = '40STD'
+                        elif any(k in col_lower for k in ['remark', 'rate structure', 'surcharges group']):
+                            col_map[col] = 'REMARKS'
+                    # Validate required columns
+                    required_cols = ['PORT', '20', '40STD', '40HC']
+                    if not all(k in col_map.values() for k in required_cols):
+                        print(f"Missing required columns in AUS and NZ: {required_cols}, Mapped: {col_map}")
                         continue
-                    parsed_aus_nz = df_aus_nz[available_cols].rename(columns=col_map)
+                    parsed_aus_nz = df_aus_nz[list(col_map.keys())].rename(columns=col_map)
                     if 'PORT' not in parsed_aus_nz.columns:
                         print("PORT column missing in AUS and NZ after mapping")
                         continue
                     parsed_aus_nz = parsed_aus_nz[parsed_aus_nz['PORT'].notna()]
-                    parsed_aus_nz = parsed_aus_nz[parsed_aus_nz['PORT'].astype(str).str.strip() != '']
-                    parsed_aus_nz = parsed_aus_nz[~parsed_aus_nz['PORT'].astype(str).str.lower().eq('port')]
-                    parsed_aus_nz = parsed_aus_nz[
-                        parsed_aus_nz[['20', '40STD', '40HC']].apply(
-                            lambda x: pd.to_numeric(x, errors='coerce').notna().sum() > 0, axis=1
-                        )
-                    ]
-                    parsed_aus_nz = parsed_aus_nz[~parsed_aus_nz['PORT'].astype(str).str.lower().str.contains('total|summary|footer', na=False)]
                     if parsed_aus_nz.empty:
-                        print("No valid data in AUS and NZ after filtering")
+                        print("No valid PORT data in AUS and NZ after notna filter")
+                        continue
+                    parsed_aus_nz = parsed_aus_nz[parsed_aus_nz['PORT'].astype(str).str.strip() != '']
+                    if parsed_aus_nz.empty:
+                        print("No valid PORT data in AUS and NZ after strip filter")
+                        continue
+                    parsed_aus_nz = parsed_aus_nz[parsed_aus_nz['PORT'].astype(str).str.lower() != 'port']
+                    if parsed_aus_nz.empty:
+                        print("No valid data in AUS and NZ after port filter")
                         continue
                     parsed_aus_nz['PORT'] = parsed_aus_nz['PORT'].astype(str).str.strip()
                     for col in ['20', '40STD', '40HC']:
@@ -594,19 +597,17 @@ def parse_one(file, month_year):
                             parsed_aus_nz[col] = clean_numeric(parsed_aus_nz[col])
                         else:
                             parsed_aus_nz[col] = pd.NA
-                    parsed_aus_nz['REMARKS'] = '; '.join(remarks) if remarks else ''
-                    parsed_aus_nz['Sheet'] = sheet_name
+                    if 'REMARKS' in parsed_aus_nz.columns:
+                        parsed_aus_nz['REMARKS'] = parsed_aus_nz['REMARKS'].astype(str).str.strip().replace('nan', '')
                     parsed_aus_nz.insert(0, 'POL', 'Nhava Sheva')
                     parsed_aus_nz['POL'] = parsed_aus_nz['POL'].apply(standardize_pol)
-                    parsed_aus_nz = parsed_aus_nz[['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']]
+                    parsed_aus_nz['Sheet'] = sheet_name
                     print(f"AUS and NZ parsed successfully: {parsed_aus_nz.shape}")
                     data.append(parsed_aus_nz)
-                    if remarks:
-                        print(f"AUS and NZ remarks: {remarks}")
-                        info.append((sheet_name, remarks))
+                    info.extend(remarks)
                 except Exception as e:
                     print(f"Error parsing AUS and NZ sheet: {str(e)}")
-                    info.append((sheet_name, [f"Error parsing AUS and NZ sheet: {str(e)}"]))
+                    info.append(f"Error parsing AUS and NZ sheet: {str(e)}")
 
             # === AFRICA ===
             elif "africa" in sheet_name_lower:
@@ -616,7 +617,7 @@ def parse_one(file, month_year):
                     data_start_row = None
                     for idx, row in df_raw.iterrows():
                         row_str = ' '.join(row.dropna().astype(str).str.strip())
-                        if sum(k in row_str.upper() for k in ['PORT', "20'", "40'", "40'HC", 'DEST', 'DESTINATION']) >= 2:
+                        if sum(k in row_str.upper() for k in ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION']) >= 2:
                             if idx + 1 < len(df_raw):
                                 next_row = df_raw.iloc[idx + 1].dropna().astype(str).str.strip()
                                 if any(next_row.str.isnumeric()) or any(next_row.str.contains(r'^[A-Za-z\s]+$', regex=True)):
@@ -630,33 +631,42 @@ def parse_one(file, month_year):
                         continue
                     df_africa = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
                     df_africa.columns = df_africa.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
+                    # Print raw column names for debugging
                     print(f"AFRICA columns: {list(df_africa.columns)}")
-                    col_map = {
-                        'PORT': 'PORT',
-                        "20'": '20',
-                        "40'": '40STD',
-                        "40'HC": '40HC',
-                        'Surcharges group': 'REMARKS'
-                    }
-                    available_cols = [col for col in col_map.keys() if col in df_africa.columns]
-                    if not available_cols:
-                        print(f"No matching columns in AFRICA")
+                    # Map columns
+                    col_map = {}
+                    for col in df_africa.columns:
+                        col_lower = col.lower().strip()
+                        if any(k in col_lower for k in ['port', 'dest', 'destination']):
+                            col_map[col] = 'PORT'
+                        elif any(k in col_lower for k in ["20'", '20d', '20dc', '20 dc', '20 ', "20'd"]):
+                            col_map[col] = '20'
+                        elif any(k in col_lower for k in ['40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"]):
+                            col_map[col] = '40HC'
+                        elif any(k in col_lower for k in ["40'", '40d', '40std', '40 std', '40 ', "40'd"]):
+                            col_map[col] = '40STD'
+                        elif any(k in col_lower for k in ['remark', 'rate structure', 'surcharges group']):
+                            col_map[col] = 'REMARKS'
+                    # Validate required columns
+                    required_cols = ['PORT', '20', '40STD', '40HC']
+                    if not all(k in col_map.values() for k in required_cols):
+                        print(f"Missing required columns in AFRICA: {required_cols}, Mapped: {col_map}")
                         continue
-                    parsed_africa = df_africa[available_cols].rename(columns=col_map)
+                    parsed_africa = df_africa[list(col_map.keys())].rename(columns=col_map)
                     if 'PORT' not in parsed_africa.columns:
                         print("PORT column missing in AFRICA after mapping")
                         continue
                     parsed_africa = parsed_africa[parsed_africa['PORT'].notna()]
-                    parsed_africa = parsed_africa[parsed_africa['PORT'].astype(str).str.strip() != '']
-                    parsed_africa = parsed_africa[~parsed_africa['PORT'].astype(str).str.lower().eq('port')]
-                    parsed_africa = parsed_africa[
-                        parsed_africa[['20', '40STD', '40HC']].apply(
-                            lambda x: pd.to_numeric(x, errors='coerce').notna().sum() > 0, axis=1
-                        )
-                    ]
-                    parsed_africa = parsed_africa[~parsed_africa['PORT'].astype(str).str.lower().str.contains('total|summary|footer', na=False)]
                     if parsed_africa.empty:
-                        print("No valid data in AFRICA after filtering")
+                        print("No valid PORT data in AFRICA after notna filter")
+                        continue
+                    parsed_africa = parsed_africa[parsed_africa['PORT'].astype(str).str.strip() != '']
+                    if parsed_africa.empty:
+                        print("No valid PORT data in AFRICA after strip filter")
+                        continue
+                    parsed_africa = parsed_africa[parsed_africa['PORT'].astype(str).str.lower() != 'port']
+                    if parsed_africa.empty:
+                        print("No valid data in AFRICA after port filter")
                         continue
                     parsed_africa['PORT'] = parsed_africa['PORT'].astype(str).str.strip()
                     for col in ['20', '40STD', '40HC']:
@@ -664,32 +674,27 @@ def parse_one(file, month_year):
                             parsed_africa[col] = clean_numeric(parsed_africa[col])
                         else:
                             parsed_africa[col] = pd.NA
-                    parsed_africa['REMARKS'] = '; '.join(remarks) if remarks else ''
-                    parsed_africa['Sheet'] = sheet_name
+                    if 'REMARKS' in parsed_africa.columns:
+                        parsed_africa['REMARKS'] = parsed_africa['REMARKS'].astype(str).str.strip().replace('nan', '')
                     parsed_africa.insert(0, 'POL', 'Nhava Sheva')
                     parsed_africa['POL'] = parsed_africa['POL'].apply(standardize_pol)
-                    parsed_africa = parsed_africa[['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']]
+                    parsed_africa['Sheet'] = sheet_name
                     print(f"AFRICA parsed successfully: {parsed_africa.shape}")
                     data.append(parsed_africa)
-                    if remarks:
-                        print(f"AFRICA remarks: {remarks}")
-                        info.append((sheet_name, remarks))
+                    info.extend(remarks)
                 except Exception as e:
                     print(f"Error parsing AFRICA sheet: {str(e)}")
-                    info.append((sheet_name, [f"Error parsing AFRICA sheet: {str(e)}"]))
+                    info.append(f"Error parsing AFRICA sheet: {str(e)}")
 
             # === LATAM ===
-            elif sheet_name_lower == "latam":
+            elif "latam" in sheet_name_lower:
                 try:
-                    if "april" in month_year.lower():
-                        print(f"Warning: LATAM sheet found in April file, skipping")
-                        continue
                     df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
                     remarks = []
                     data_start_row = None
                     for idx, row in df_raw.iterrows():
                         row_str = ' '.join(row.dropna().astype(str).str.strip())
-                        if sum(k in row_str.upper() for k in ['PORTS', "20'", "40'", "40'HC", 'DEST', 'DESTINATION']) >= 3:
+                        if sum(k in row_str.upper() for k in ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION', 'PORTS']) >= 2:
                             if idx + 1 < len(df_raw):
                                 next_row = df_raw.iloc[idx + 1].dropna().astype(str).str.strip()
                                 if any(next_row.str.isnumeric()) or any(next_row.str.contains(r'^[A-Za-z\s]+$', regex=True)):
@@ -703,37 +708,42 @@ def parse_one(file, month_year):
                         continue
                     df_latam = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
                     df_latam.columns = df_latam.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
+                    # Print raw column names for debugging
                     print(f"LATAM columns: {list(df_latam.columns)}")
-                    col_map = {
-                        'PORTS': 'PORT',
-                        "20'": '20',
-                        "40'": '40STD',
-                        "40'HC": '40HC'
-                    }
-                    print(f"LATAM column mapping: {col_map}")
-                    available_cols = [col for col in col_map.keys() if col in df_latam.columns]
-                    if not available_cols:
-                        print(f"No matching columns in LATAM")
+                    # Map columns
+                    col_map = {}
+                    for col in df_latam.columns:
+                        col_lower = col.lower().strip()
+                        if any(k in col_lower for k in ['port', 'dest', 'destination', 'ports']):
+                            col_map[col] = 'PORT'
+                        elif any(k in col_lower for k in ["20'", '20d', '20dc', '20 dc', '20 ', "20'd"]):
+                            col_map[col] = '20'
+                        elif any(k in col_lower for k in ['40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"]):
+                            col_map[col] = '40HC'
+                        elif any(k in col_lower for k in ["40'", '40d', '40std', '40 std', '40 ', "40'd"]):
+                            col_map[col] = '40STD'
+                        elif any(k in col_lower for k in ['remark', 'rate structure', 'surcharges group']):
+                            col_map[col] = 'REMARKS'
+                    # Validate required columns
+                    required_cols = ['PORT', '20', '40STD', '40HC']
+                    if not all(k in col_map.values() for k in required_cols):
+                        print(f"Missing required columns in LATAM: {required_cols}, Mapped: {col_map}")
                         continue
-                    parsed_latam = df_latam[available_cols].rename(columns=col_map)
-                    print(f"Parsed LATAM columns after mapping: {list(parsed_latam.columns)}")
+                    parsed_latam = df_latam[list(col_map.keys())].rename(columns=col_map)
                     if 'PORT' not in parsed_latam.columns:
                         print("PORT column missing in LATAM after mapping")
                         continue
                     parsed_latam = parsed_latam[parsed_latam['PORT'].notna()]
-                    parsed_latam = parsed_latam[parsed_latam['PORT'].astype(str).str.strip() != '']
-                    parsed_latam = parsed_latam[~parsed_latam['PORT'].astype(str).str.lower().eq('port')]
-                    parsed_latam = parsed_latam[
-                        parsed_latam[['20', '40STD', '40HC']].apply(
-                            lambda x: pd.to_numeric(x, errors='coerce').notna().sum() > 0, axis=1
-                        )
-                    ]
-                    parsed_latam = parsed_latam[~parsed_latam['PORT'].astype(str).str.lower().str.contains('total|summary|footer|santos|la guaira', na=False)]
-                    invalid_rows = df_latam[~df_latam.index.isin(parsed_latam.index)]
-                    if not invalid_rows.empty:
-                        print(f"LATAM invalid rows: {invalid_rows[['PORTS', "20'", "40'", "40'HC"]].to_dict('records')}")
                     if parsed_latam.empty:
-                        print("No valid data in LATAM after filtering")
+                        print("No valid PORT data in LATAM after notna filter")
+                        continue
+                    parsed_latam = parsed_latam[parsed_latam['PORT'].astype(str).str.strip() != '']
+                    if parsed_latam.empty:
+                        print("No valid PORT data in LATAM after strip filter")
+                        continue
+                    parsed_latam = parsed_latam[parsed_latam['PORT'].astype(str).str.lower() != 'port']
+                    if parsed_latam.empty:
+                        print("No valid data in LATAM after port filter")
                         continue
                     parsed_latam['PORT'] = parsed_latam['PORT'].astype(str).str.strip()
                     for col in ['20', '40STD', '40HC']:
@@ -741,32 +751,27 @@ def parse_one(file, month_year):
                             parsed_latam[col] = clean_numeric(parsed_latam[col])
                         else:
                             parsed_latam[col] = pd.NA
-                    parsed_latam['REMARKS'] = '; '.join(remarks) if remarks else ''
-                    parsed_latam['Sheet'] = sheet_name
+                    if 'REMARKS' in parsed_latam.columns:
+                        parsed_latam['REMARKS'] = parsed_latam['REMARKS'].astype(str).str.strip().replace('nan', '')
                     parsed_latam.insert(0, 'POL', 'Nhava Sheva')
                     parsed_latam['POL'] = parsed_latam['POL'].apply(standardize_pol)
-                    parsed_latam = parsed_latam[['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']]
+                    parsed_latam['Sheet'] = sheet_name
                     print(f"LATAM parsed successfully: {parsed_latam.shape}")
                     data.append(parsed_latam)
-                    if remarks:
-                        print(f"LATAM remarks: {remarks}")
-                        info.append((sheet_name, remarks))
+                    info.extend(remarks)
                 except Exception as e:
                     print(f"Error parsing LATAM sheet: {str(e)}")
-                    info.append((sheet_name, [f"Error parsing LATAM sheet: {str(e)}"]))
+                    info.append(f"Error parsing LATAM sheet: {str(e)}")
 
             # === LUX Service for LAEC ===
-            elif sheet_name_lower.startswith("lux") and "laec" in sheet_name_lower:
+            elif "lux" in sheet_name_lower and "laec" in sheet_name_lower:
                 try:
-                    if "april" in month_year.lower():
-                        print(f"Warning: LUX Service for LAEC sheet found in April file, skipping")
-                        continue
                     df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
                     remarks = []
                     data_start_row = None
                     for idx, row in df_raw.iterrows():
                         row_str = ' '.join(row.dropna().astype(str).str.strip())
-                        if sum(k in row_str.upper() for k in ['PORTS', "20'", "40'", "40'HC", 'DEST', 'DESTINATION']) >= 3:
+                        if sum(k in row_str.upper() for k in ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION', 'PORTS']) >= 2:
                             if idx + 1 < len(df_raw):
                                 next_row = df_raw.iloc[idx + 1].dropna().astype(str).str.strip()
                                 if any(next_row.str.isnumeric()) or any(next_row.str.contains(r'^[A-Za-z\s]+$', regex=True)):
@@ -780,34 +785,42 @@ def parse_one(file, month_year):
                         continue
                     df_lux = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
                     df_lux.columns = df_lux.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
+                    # Print raw column names for debugging
                     print(f"LUX Service for LAEC columns: {list(df_lux.columns)}")
-                    col_map = {
-                        'PORTS': 'PORT',
-                        "20'": '20',
-                        "40'": '40STD',
-                        "40'HC": '40HC',
-                        'REMARK': 'REMARKS'
-                    }
-                    available_cols = [col for col in col_map.keys() if col in df_lux.columns]
-                    if not available_cols:
-                        print(f"No matching columns in LUX Service for LAEC")
+                    # Map columns
+                    col_map = {}
+                    for col in df_lux.columns:
+                        col_lower = col.lower().strip()
+                        if any(k in col_lower for k in ['port', 'dest', 'destination', 'ports']):
+                            col_map[col] = 'PORT'
+                        elif any(k in col_lower for k in ["20'", '20d', '20dc', '20 dc', '20 ', "20'd"]):
+                            col_map[col] = '20'
+                        elif any(k in col_lower for k in ['40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"]):
+                            col_map[col] = '40HC'
+                        elif any(k in col_lower for k in ["40'", '40d', '40std', '40 std', '40 ', "40'd"]):
+                            col_map[col] = '40STD'
+                        elif any(k in col_lower for k in ['remark', 'rate structure', 'surcharges group']):
+                            col_map[col] = 'REMARKS'
+                    # Validate required columns
+                    required_cols = ['PORT', '20', '40STD', '40HC']
+                    if not all(k in col_map.values() for k in required_cols):
+                        print(f"Missing required columns in LUX Service for LAEC: {required_cols}, Mapped: {col_map}")
                         continue
-                    parsed_lux = df_lux[available_cols].rename(columns=col_map)
-                    print(f"Parsed LUX Service for LAEC columns after mapping: {list(parsed_lux.columns)}")
+                    parsed_lux = df_lux[list(col_map.keys())].rename(columns=col_map)
                     if 'PORT' not in parsed_lux.columns:
                         print("PORT column missing in LUX Service for LAEC after mapping")
                         continue
                     parsed_lux = parsed_lux[parsed_lux['PORT'].notna()]
-                    parsed_lux = parsed_lux[parsed_lux['PORT'].astype(str).str.strip() != '']
-                    parsed_lux = parsed_lux[~parsed_lux['PORT'].astype(str).str.lower().eq('port')]
-                    parsed_lux = parsed_lux[
-                        parsed_lux[['20', '40STD', '40HC']].apply(
-                            lambda x: pd.to_numeric(x, errors='coerce').notna().sum() > 0, axis=1
-                        )
-                    ]
-                    parsed_lux = parsed_lux[~parsed_lux['PORT'].astype(str).str.lower().str.contains('total|summary|footer', na=False)]
                     if parsed_lux.empty:
-                        print("No valid data in LUX Service for LAEC after filtering")
+                        print("No valid PORT data in LUX Service for LAEC after notna filter")
+                        continue
+                    parsed_lux = parsed_lux[parsed_lux['PORT'].astype(str).str.strip() != '']
+                    if parsed_lux.empty:
+                        print("No valid PORT data in LUX Service for LAEC after strip filter")
+                        continue
+                    parsed_lux = parsed_lux[parsed_lux['PORT'].astype(str).str.lower() != 'port']
+                    if parsed_lux.empty:
+                        print("No valid data in LUX Service for LAEC after port filter")
                         continue
                     parsed_lux['PORT'] = parsed_lux['PORT'].astype(str).str.strip()
                     for col in ['20', '40STD', '40HC']:
@@ -815,45 +828,26 @@ def parse_one(file, month_year):
                             parsed_lux[col] = clean_numeric(parsed_lux[col])
                         else:
                             parsed_lux[col] = pd.NA
-                    parsed_lux['REMARKS'] = '; '.join(remarks) if remarks else ''
-                    parsed_lux['Sheet'] = sheet_name
+                    if 'REMARKS' in parsed_lux.columns:
+                        parsed_lux['REMARKS'] = parsed_lux['REMARKS'].astype(str).str.strip().replace('nan', '')
                     parsed_lux.insert(0, 'POL', 'Nhava Sheva')
                     parsed_lux['POL'] = parsed_lux['POL'].apply(standardize_pol)
-                    parsed_lux = parsed_lux[['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']]
+                    parsed_lux['Sheet'] = sheet_name
                     print(f"LUX Service for LAEC parsed successfully: {parsed_lux.shape}")
                     data.append(parsed_lux)
-                    if remarks:
-                        print(f"LUX Service for LAEC remarks: {remarks}")
-                        info.append((sheet_name, remarks))
+                    info.extend(remarks)
                 except Exception as e:
                     print(f"Error parsing LUX Service for LAEC sheet: {str(e)}")
-                    info.append((sheet_name, [f"Error parsing LUX Service for LAEC sheet: {str(e)}"]))
-
-        # Debug data list before concatenation
-        print(f"Data list contents: {[df.shape for df in data]}")
-        for idx, df in enumerate(data):
-            print(f"DataFrame {idx} columns: {list(df.columns)}")
+                    info.append(f"Error parsing LUX Service for LAEC sheet: {str(e)}")
 
         # Combine all data
-        if data:
-            try:
-                final_df = pd.concat([df for df in data if not df.empty], ignore_index=True)
-                expected_cols = ['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']
-                if not all(col in final_df.columns for col in expected_cols):
-                    print(f"Warning: final_df missing expected columns. Found: {list(final_df.columns)}, Expected: {expected_cols}")
-                print(f"Final DataFrame shape: {final_df.shape}")
-            except Exception as e:
-                print(f"Error concatenating DataFrames: {str(e)}")
-                final_df = pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet'])
-        else:
-            print("No data to concatenate")
-            final_df = pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet'])
-
+        final_df = pd.concat([df for df in data if not df.empty], ignore_index=True) if data else pd.DataFrame()
+        info = list(dict.fromkeys([line for line in info if len(line.split()) > 2]))  # Remove duplicates and short lines
         return final_df, info
 
     except Exception as e:
         print(f"Error in parse_one: {str(e)}")
-        return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']), [("Error", [f"Error in parse_one: {str(e)}"])]
+        return pd.DataFrame(), [f"Error in parse_one: {str(e)}"]
 
 def parse_msc(file, month_year):
     try:
