@@ -30,9 +30,8 @@ firebase_dict = {
     "client_x509_cert_url": st.secrets.firebase.client_x509_cert_url,
 }
 
-cred = credentials.Certificate(firebase_dict)
-
 # === Initialize Firebase ===
+cred = credentials.Certificate(firebase_dict)
 
 if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
@@ -52,12 +51,6 @@ def clean_numeric_series(col):
         errors='coerce'
     )
 
-# def clean_numeric(value):
-#     try:
-#         return float(str(value).replace(',', '').replace('EUR', '').replace('USD', '').strip())
-#     except:
-#         return 'CASE BY CASE'
-    
 def clean_numeric(series):
     def convert_to_numeric(value):
         if pd.isna(value) or value == '':
@@ -370,185 +363,538 @@ def parse_wan_hai(file, month_year):
         print(f"Error parsing Wan Hai file: {str(e)}")
         return pd.DataFrame(), []
 
+def clean_numeric(series):
+    """Clean numeric columns by converting to numeric and handling errors."""
+    import pandas as pd
+    return pd.to_numeric(series, errors='coerce')
+
+def standardize_pol(pol):
+    """Standardize POL names."""
+    return str(pol).strip().title()
+
 def parse_one(file, month_year):
+    import pandas as pd
+    from datetime import datetime
+
     data = []
     info = []
     try:
-        # FAREAST and GULF
+        # Parse month_year to extract month
         try:
-            df_fg = pd.read_excel(file, sheet_name="FAREAST and GULF")
-            parsed_fg = df_fg[['FPD', "20'D", "40'D", 'HCD', 'POD COUNTRY']].copy()
-            parsed_fg.columns = ['PORT', '20', '40STD', '40HC', 'POD COUNTRY']
-            parsed_fg['PORT'] = parsed_fg['PORT'].astype(str).str.strip()
-            parsed_fg['20'] = clean_numeric(parsed_fg['20'])
-            parsed_fg['40STD'] = clean_numeric(parsed_fg['40STD'])
-            parsed_fg['40HC'] = clean_numeric(parsed_fg['40HC'])
-            parsed_fg['POD COUNTRY'] = parsed_fg['POD COUNTRY'].astype(str).str.strip().replace('nan', '')
-            parsed_fg.insert(0, 'POL', 'Nhava Sheva')
-            parsed_fg['POL'] = parsed_fg['POL'].apply(standardize_pol)  # Standardize POL names
-            parsed_fg = parsed_fg.drop(columns=['POD COUNTRY'])
-            data.append(parsed_fg)
+            month = datetime.strptime(month_year, '%Y-%m').strftime('%B').lower()
         except ValueError:
-            pass
+            try:
+                month = datetime.strptime(month_year, '%Y-%b').strftime('%B').lower()
+            except ValueError:
+                try:
+                    month = datetime.strptime(month_year, '%B %Y').strftime('%B').lower()
+                except ValueError:
+                    month = ''.join([c for c in month_year.lower() if c.isalpha()])
+        print(f"Parsed month: {month}")
 
-        # EUR and MED
-        try:
-            df_eur_med_header = pd.read_excel(file, sheet_name="EUR and MED", nrows=6, header=None)
-            eur_med_description = "\n".join(df_eur_med_header[0].dropna().astype(str))
-            df_eur_med = pd.read_excel(file, sheet_name="EUR and MED", skiprows=6).rename(columns={
-                'DEL Description': 'PORT',
-                'OFT 20': '20',
-                'OFT 40': '40STD',
-                'OFT HC': '40HC',
-                'Expiry Date': 'EXPIRY DATE'
-            })
-            df_eur_med['20'] = clean_numeric(df_eur_med['20'])
-            df_eur_med['40STD'] = clean_numeric(df_eur_med['40STD'])
-            df_eur_med['40HC'] = clean_numeric(df_eur_med['40HC'])
-            df_eur_med['PORT'] = df_eur_med['PORT'].astype(str).str.strip()
-            df_eur_med['EXPIRY DATE'] = pd.to_datetime(df_eur_med['EXPIRY DATE'], errors='coerce').dt.strftime('%Y-%m-%d')
-            parsed_eur_med = df_eur_med[['PORT', '20', '40STD', '40HC', 'EXPIRY DATE']].copy()
-            parsed_eur_med.insert(0, 'POL', 'Nhava Sheva')
-            parsed_eur_med['POL'] = parsed_eur_med['POL'].apply(standardize_pol)  # Standardize POL names
-            data.append(parsed_eur_med)
-            info.append(eur_med_description)
-        except ValueError:
-            pass
+        # Load Excel file to get all sheet names
+        xl = pd.ExcelFile(file)
+        sheets = xl.sheet_names
+        print(f"Sheets found: {sheets}")
 
-        # AUS and NZ
-        try:
-            df_aus_nz_full = pd.read_excel(file, sheet_name="AUS and NZ", header=None)
-            info_lines_aus_nz = []
-            found_data = False
-            for index, row in df_aus_nz_full.iterrows():
-                for cell in row:
-                    if isinstance(cell, str) and "PORT" in cell.upper():
-                        found_data = True
-                        break
-                    if not found_data and isinstance(cell, str) and cell.strip():
-                        info_lines_aus_nz.append(cell.strip())
-                if found_data:
-                    break
-            remarks_start = False
-            for index, row in df_aus_nz_full.iterrows():
-                for cell in row:
-                    if isinstance(cell, str) and "Remarks" in cell:
-                        remarks_start = True
+        for sheet_name in sheets:
+            sheet_name_lower = sheet_name.lower().strip()
+
+            # Skip LATAM and LUX Service for LAEC in April
+            if month == "april" and (sheet_name_lower == "latam" or (sheet_name_lower.startswith("lux") and "laec" in sheet_name_lower)):
+                print(f"Skipping sheet {sheet_name} for April file")
+                continue
+
+            # === FAREAST and GULF ===
+            if "fareast" in sheet_name_lower and "gulf" in sheet_name_lower:
+                try:
+                    df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
+                    remarks = []
+                    data_start_row = None
+                    for idx, row in df_raw.iterrows():
+                        row_str = ' '.join(row.dropna().astype(str).str.strip())
+                        if sum(k in row_str.upper() for k in ['FPD', 'PORT', 'DEST', 'DESTINATION', "20'", "40'", 'HCD']) >= 2:
+                            if idx + 1 < len(df_raw):
+                                next_row = df_raw.iloc[idx + 1].dropna().astype(str).str.strip()
+                                if any(next_row.str.isnumeric()) or any(next_row.str.contains(r'^[A-Za-z\s]+$', regex=True)):
+                                    data_start_row = idx
+                                    break
+                        for cell in row:
+                            if pd.notna(cell) and str(cell).strip():
+                                remarks.append(str(cell).strip())
+                    if data_start_row is None:
+                        print(f"No data table found in FAREAST and GULF sheet")
                         continue
-                    if remarks_start and isinstance(cell, str) and cell.strip():
-                        info_lines_aus_nz.append(cell.strip())
-                    elif remarks_start and not any(isinstance(c, str) and c.strip() for c in row):
-                        break
-            info_lines_aus_nz = [line for line in info_lines_aus_nz if len(line.split()) > 2]
-            info_lines_aus_nz = list(dict.fromkeys(info_lines_aus_nz))
-            df_aus_nz = pd.read_excel(file, sheet_name="AUS and NZ", skiprows=3)
-            df_aus_nz.columns = df_aus_nz.columns.map(str).str.strip().str.replace("’", "'").str.replace("‘", "'")
-            target_columns = ['PORT', "20'", "40'", "40'HC"]
-            col_map = {'PORT': 'PORT', "20'": '20', "40'": '40STD', "40'HC": '40HC'}
-            available_targets = [col for col in target_columns if col in df_aus_nz.columns]
-            if not available_targets:
-                col_map = {}
-                for col in df_aus_nz.columns:
-                    col_lower = col.lower()
-                    if 'pol' in col_lower or 'dest' in col_lower:
-                        col_map[col] = 'PORT'
-                    elif '20' in col_lower:
-                        col_map[col] = '20'
-                    elif '40' in col_lower:
-                        col_map[col] = '40STD'
-                    elif '40' in col_lower and 'hc' in col_lower:
-                        col_map[col] = '40HC'
-                available_targets = list(col_map.keys())
-                if not available_targets:
-                    col_map = {df_aus_nz.columns[1]: 'PORT', df_aus_nz.columns[4]: '20', df_aus_nz.columns[5]: '40STD', df_aus_nz.columns[6]: '40HC'}
-                    available_targets = list(col_map.keys())
-            parsed_aus_nz = df_aus_nz[available_targets].rename(columns=col_map)
-            parsed_aus_nz = parsed_aus_nz[parsed_aus_nz['PORT'].str.lower() != 'port']
-            parsed_aus_nz = parsed_aus_nz.dropna(subset=['PORT', '20', '40STD', '40HC'])
-            parsed_aus_nz['PORT'] = parsed_aus_nz['PORT'].astype(str).str.strip()
-            parsed_aus_nz['20'] = clean_numeric(parsed_aus_nz['20'])
-            parsed_aus_nz['40STD'] = clean_numeric(parsed_aus_nz['40STD'])
-            parsed_aus_nz['40HC'] = clean_numeric(parsed_aus_nz['40HC'])
-            parsed_aus_nz.insert(0, 'POL', 'Nhava Sheva')
-            parsed_aus_nz['POL'] = parsed_aus_nz['POL'].apply(standardize_pol)  # Standardize POL names
-            data.append(parsed_aus_nz)
-            info.extend(info_lines_aus_nz)
-        except ValueError:
-            pass
-
-        # AFRICA
-        try:
-            df_africa_full = pd.read_excel(file, sheet_name="AFRICA", header=None)
-            info_lines_africa = []
-            data_section_started = False
-            for index, row in df_africa_full.iterrows():
-                for cell in row:
-                    if isinstance(cell, str) and "PORT" in cell.upper() and not data_section_started:
-                        data_section_started = True
+                    df_fg = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
+                    df_fg.columns = df_fg.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
+                    print(f"FAREAST and GULF columns: {list(df_fg.columns)}")
+                    col_map = {
+                        'FPD': 'PORT',
+                        "20'D": '20',
+                        "40'D": '40STD',
+                        'HCD': '40HC',
+                        'Rate Structure': 'REMARKS'
+                    }
+                    available_cols = [col for col in col_map.keys() if col in df_fg.columns]
+                    if not available_cols:
+                        print(f"No matching columns in FAREAST and GULF")
                         continue
-                    if isinstance(cell, str) and cell.strip():
-                        info_lines_africa.append(cell.strip())
-                    if data_section_started and not any(isinstance(c, str) and c.strip() for c in row) and index > 5:
-                        break
-            info_lines_africa = [line for line in info_lines_africa if len(line.split()) > 2]
-            info_lines_africa = list(dict.fromkeys(info_lines_africa))
-            df_africa = pd.read_excel(file, sheet_name="AFRICA", skiprows=3)
-            df_africa.columns = df_africa.columns.map(str).str.strip().str.replace("’", "'").str.replace("‘", "'")
-            target_columns = ['PORT', "20'", "40'", "40'HC", 'Remarks']
-            col_map = {'PORT': 'PORT', "20'": '20', "40'": '40STD', "40'HC": '40HC', 'Remarks': 'REMARKS'}
-            available_targets = [col for col in target_columns if col in df_africa.columns]
-            if not available_targets:
-                col_map = {}
-                for col in df_africa.columns:
-                    col_lower = col.lower()
-                    if 'port' in col_lower or 'dest' in col_lower:
-                        col_map[col] = 'PORT'
-                    elif '20' in col_lower:
-                        col_map[col] = '20'
-                    elif '40' in col_lower and 'hc' not in col_lower:
-                        col_map[col] = '40STD'
-                    elif '40' in col_lower and 'hc' in col_lower:
-                        col_map[col] = '40HC'
-                    elif 'remark' in col_lower or 'note' in col_lower:
-                        col_map[col] = 'REMARKS'
-                available_targets = list(col_map.keys())
-            parsed_africa = df_africa[available_targets].rename(columns=col_map)
-            parsed_africa = parsed_africa[parsed_africa['PORT'].str.lower() != 'port']
-            desired_columns = [col for col in ['PORT', '20', '40STD', '40HC', 'REMARKS'] if col in parsed_africa.columns]
-            parsed_africa = parsed_africa.dropna(subset=desired_columns)
-            parsed_africa['PORT'] = parsed_africa['PORT'].astype(str).str.strip()
-            parsed_africa['20'] = clean_numeric(parsed_africa['20'])
-            parsed_africa['40STD'] = clean_numeric(parsed_africa['40STD'])
-            parsed_africa['40HC'] = clean_numeric(parsed_africa['40HC'])
-            if 'REMARKS' in parsed_africa.columns:
-                parsed_africa['REMARKS'] = parsed_africa['REMARKS'].astype(str).str.strip().replace('nan', '')
-            parsed_africa.insert(0, 'POL', 'Nhava Sheva')
-            parsed_africa['POL'] = parsed_africa['POL'].apply(standardize_pol)  # Standardize POL names
-            data.append(parsed_africa)
-            info.extend(info_lines_africa)
-        except Exception as e:
-            print(f"Error parsing AFRICA sheet: {str(e)}")
+                    parsed_fg = df_fg[available_cols].rename(columns=col_map)
+                    if 'PORT' not in parsed_fg.columns:
+                        print("PORT column missing in FAREAST and GULF after mapping")
+                        continue
+                    parsed_fg = parsed_fg[parsed_fg['PORT'].notna()]
+                    print(f"FAREAST and GULF before filtering: {parsed_fg.shape}")
+                    parsed_fg = parsed_fg[parsed_fg['PORT'].astype(str).str.strip() != '']
+                    parsed_fg = parsed_fg[~parsed_fg['PORT'].astype(str).str.lower().eq('port')]
+                    parsed_fg = parsed_fg[
+                        parsed_fg[['20', '40STD', '40HC']].apply(
+                            lambda x: pd.to_numeric(x, errors='coerce').notna().sum() > 0, axis=1
+                        )
+                    ]
+                    parsed_fg = parsed_fg[~parsed_fg['PORT'].astype(str).str.lower().str.contains('total|summary|footer', na=False)]
+                    if parsed_fg.empty:
+                        print("No valid data in FAREAST and GULF after filtering")
+                        continue
+                    parsed_fg['PORT'] = parsed_fg['PORT'].astype(str).str.strip()
+                    for col in ['20', '40STD', '40HC']:
+                        if col in parsed_fg.columns:
+                            parsed_fg[col] = clean_numeric(parsed_fg[col])
+                        else:
+                            parsed_fg[col] = pd.NA
+                    parsed_fg['REMARKS'] = '; '.join(remarks) if remarks else ''
+                    parsed_fg['Sheet'] = sheet_name
+                    parsed_fg.insert(0, 'POL', 'Nhava Sheva')
+                    parsed_fg['POL'] = parsed_fg['POL'].apply(standardize_pol)
+                    parsed_fg = parsed_fg[['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']]
+                    print(f"FAREAST and GULF parsed successfully: {parsed_fg.shape}")
+                    data.append(parsed_fg)
+                    if remarks:
+                        print(f"FAREAST and GULF remarks: {remarks}")
+                        info.append((sheet_name, remarks))
+                except Exception as e:
+                    print(f"Error parsing FAREAST and GULF sheet: {str(e)}")
+                    info.append((sheet_name, [f"Error parsing FAREAST and GULF sheet: {str(e)}"]))
+
+            # === EUR and MED ===
+            elif "eur" in sheet_name_lower and "med" in sheet_name_lower:
+                try:
+                    df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
+                    remarks = []
+                    data_start_row = None
+                    for idx, row in df_raw.iterrows():
+                        row_str = ' '.join(row.dropna().astype(str).str.strip())
+                        if sum(k in row_str.upper() for k in ['DEL DESCRIPTION', 'OFT 20', 'OFT 40', 'OFT HC']) >= 2:
+                            data_start_row = idx
+                            break
+                        for cell in row:
+                            if pd.notna(cell) and str(cell).strip():
+                                remarks.append(str(cell).strip())
+                    if data_start_row is None:
+                        continue
+                    df_eur_med = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
+                    df_eur_med.columns = df_eur_med.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
+                    col_map = {
+                        'DEL Description': 'PORT',
+                        'OFT 20': '20',
+                        'OFT 40': '40STD',
+                        'OFT HC': '40HC',
+                        'Remarks': 'REMARKS'
+                    }
+                    available_cols = [col for col in col_map.keys() if col in df_eur_med.columns]
+                    if not available_cols:
+                        continue
+                    parsed_eur_med = df_eur_med[available_cols].rename(columns=col_map)
+                    if 'PORT' not in parsed_eur_med.columns:
+                        continue
+                    parsed_eur_med = parsed_eur_med[parsed_eur_med['PORT'].notna()]
+                    parsed_eur_med = parsed_eur_med[parsed_eur_med['PORT'].astype(str).str.strip() != '']
+                    parsed_eur_med = parsed_eur_med[~parsed_eur_med['PORT'].astype(str).str.lower().eq('port')]
+                    parsed_eur_med = parsed_eur_med[
+                        parsed_eur_med[['20', '40STD', '40HC']].apply(
+                            lambda x: pd.to_numeric(x, errors='coerce').notna().sum() > 0, axis=1
+                        )
+                    ]
+                    parsed_eur_med = parsed_eur_med[~parsed_eur_med['PORT'].astype(str).str.lower().str.contains('total|summary|footer', na=False)]
+                    if parsed_eur_med.empty:
+                        continue
+                    for col in ['20', '40STD', '40HC']:
+                        if col in parsed_eur_med.columns:
+                            parsed_eur_med[col] = clean_numeric(parsed_eur_med[col])
+                        else:
+                            parsed_eur_med[col] = pd.NA
+                    parsed_eur_med['PORT'] = parsed_eur_med['PORT'].astype(str).str.strip()
+                    parsed_eur_med['REMARKS'] = '; '.join(remarks) if remarks else ''
+                    parsed_eur_med['Sheet'] = sheet_name
+                    parsed_eur_med.insert(0, 'POL', 'Nhava Sheva')
+                    parsed_eur_med['POL'] = parsed_eur_med['POL'].apply(standardize_pol)
+                    parsed_eur_med = parsed_eur_med[['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']]
+                    print(f"EUR and MED parsed successfully: {parsed_eur_med.shape}")
+                    data.append(parsed_eur_med)
+                    if remarks:
+                        print(f"EUR and MED remarks: {remarks}")
+                        info.append((sheet_name, remarks))
+                except Exception as e:
+                    print(f"Error parsing EUR and MED sheet: {str(e)}")
+                    info.append((sheet_name, [f"Error parsing EUR and MED sheet: {str(e)}"]))
+
+            # === AUS and NZ ===
+            elif "aus" in sheet_name_lower and "nz" in sheet_name_lower:
+                try:
+                    df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
+                    remarks = []
+                    data_start_row = None
+                    for idx, row in df_raw.iterrows():
+                        row_str = ' '.join(row.dropna().astype(str).str.strip())
+                        if sum(k in row_str.upper() for k in ['PORT', "20'", "40'", "40'HC", 'DEST', 'DESTINATION']) >= 2:
+                            if idx + 1 < len(df_raw):
+                                next_row = df_raw.iloc[idx + 1].dropna().astype(str).str.strip()
+                                if any(next_row.str.isnumeric()) or any(next_row.str.contains(r'^[A-Za-z\s]+$', regex=True)):
+                                    data_start_row = idx
+                                    break
+                        for cell in row:
+                            if pd.notna(cell) and str(cell).strip():
+                                remarks.append(str(cell).strip())
+                    if data_start_row is None:
+                        print(f"No data table found in AUS and NZ sheet")
+                        continue
+                    df_aus_nz = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
+                    df_aus_nz.columns = df_aus_nz.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
+                    print(f"AUS and NZ columns: {list(df_aus_nz.columns)}")
+                    col_map = {
+                        'PORT': 'PORT',
+                        "20'": '20',
+                        "40'": '40STD',
+                        "40'HC": '40HC',
+                        'Surcharges group': 'REMARKS'
+                    }
+                    available_cols = [col for col in col_map.keys() if col in df_aus_nz.columns]
+                    if not available_cols:
+                        print(f"No matching columns in AUS and NZ")
+                        continue
+                    parsed_aus_nz = df_aus_nz[available_cols].rename(columns=col_map)
+                    if 'PORT' not in parsed_aus_nz.columns:
+                        print("PORT column missing in AUS and NZ after mapping")
+                        continue
+                    parsed_aus_nz = parsed_aus_nz[parsed_aus_nz['PORT'].notna()]
+                    parsed_aus_nz = parsed_aus_nz[parsed_aus_nz['PORT'].astype(str).str.strip() != '']
+                    parsed_aus_nz = parsed_aus_nz[~parsed_aus_nz['PORT'].astype(str).str.lower().eq('port')]
+                    parsed_aus_nz = parsed_aus_nz[
+                        parsed_aus_nz[['20', '40STD', '40HC']].apply(
+                            lambda x: pd.to_numeric(x, errors='coerce').notna().sum() > 0, axis=1
+                        )
+                    ]
+                    parsed_aus_nz = parsed_aus_nz[~parsed_aus_nz['PORT'].astype(str).str.lower().str.contains('total|summary|footer', na=False)]
+                    if parsed_aus_nz.empty:
+                        print("No valid data in AUS and NZ after filtering")
+                        continue
+                    parsed_aus_nz['PORT'] = parsed_aus_nz['PORT'].astype(str).str.strip()
+                    for col in ['20', '40STD', '40HC']:
+                        if col in parsed_aus_nz.columns:
+                            parsed_aus_nz[col] = clean_numeric(parsed_aus_nz[col])
+                        else:
+                            parsed_aus_nz[col] = pd.NA
+                    parsed_aus_nz['REMARKS'] = '; '.join(remarks) if remarks else ''
+                    parsed_aus_nz['Sheet'] = sheet_name
+                    parsed_aus_nz.insert(0, 'POL', 'Nhava Sheva')
+                    parsed_aus_nz['POL'] = parsed_aus_nz['POL'].apply(standardize_pol)
+                    parsed_aus_nz = parsed_aus_nz[['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']]
+                    print(f"AUS and NZ parsed successfully: {parsed_aus_nz.shape}")
+                    data.append(parsed_aus_nz)
+                    if remarks:
+                        print(f"AUS and NZ remarks: {remarks}")
+                        info.append((sheet_name, remarks))
+                except Exception as e:
+                    print(f"Error parsing AUS and NZ sheet: {str(e)}")
+                    info.append((sheet_name, [f"Error parsing AUS and NZ sheet: {str(e)}"]))
+
+            # === AFRICA ===
+            elif "africa" in sheet_name_lower:
+                try:
+                    df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
+                    remarks = []
+                    data_start_row = None
+                    for idx, row in df_raw.iterrows():
+                        row_str = ' '.join(row.dropna().astype(str).str.strip())
+                        if sum(k in row_str.upper() for k in ['PORT', "20'", "40'", "40'HC", 'DEST', 'DESTINATION']) >= 2:
+                            if idx + 1 < len(df_raw):
+                                next_row = df_raw.iloc[idx + 1].dropna().astype(str).str.strip()
+                                if any(next_row.str.isnumeric()) or any(next_row.str.contains(r'^[A-Za-z\s]+$', regex=True)):
+                                    data_start_row = idx
+                                    break
+                        for cell in row:
+                            if pd.notna(cell) and str(cell).strip():
+                                remarks.append(str(cell).strip())
+                    if data_start_row is None:
+                        print(f"No data table found in AFRICA sheet")
+                        continue
+                    df_africa = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
+                    df_africa.columns = df_africa.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
+                    print(f"AFRICA columns: {list(df_africa.columns)}")
+                    col_map = {
+                        'PORT': 'PORT',
+                        "20'": '20',
+                        "40'": '40STD',
+                        "40'HC": '40HC',
+                        'Surcharges group': 'REMARKS'
+                    }
+                    available_cols = [col for col in col_map.keys() if col in df_africa.columns]
+                    if not available_cols:
+                        print(f"No matching columns in AFRICA")
+                        continue
+                    parsed_africa = df_africa[available_cols].rename(columns=col_map)
+                    if 'PORT' not in parsed_africa.columns:
+                        print("PORT column missing in AFRICA after mapping")
+                        continue
+                    parsed_africa = parsed_africa[parsed_africa['PORT'].notna()]
+                    parsed_africa = parsed_africa[parsed_africa['PORT'].astype(str).str.strip() != '']
+                    parsed_africa = parsed_africa[~parsed_africa['PORT'].astype(str).str.lower().eq('port')]
+                    parsed_africa = parsed_africa[
+                        parsed_africa[['20', '40STD', '40HC']].apply(
+                            lambda x: pd.to_numeric(x, errors='coerce').notna().sum() > 0, axis=1
+                        )
+                    ]
+                    parsed_africa = parsed_africa[~parsed_africa['PORT'].astype(str).str.lower().str.contains('total|summary|footer', na=False)]
+                    if parsed_africa.empty:
+                        print("No valid data in AFRICA after filtering")
+                        continue
+                    parsed_africa['PORT'] = parsed_africa['PORT'].astype(str).str.strip()
+                    for col in ['20', '40STD', '40HC']:
+                        if col in parsed_africa.columns:
+                            parsed_africa[col] = clean_numeric(parsed_africa[col])
+                        else:
+                            parsed_africa[col] = pd.NA
+                    parsed_africa['REMARKS'] = '; '.join(remarks) if remarks else ''
+                    parsed_africa['Sheet'] = sheet_name
+                    parsed_africa.insert(0, 'POL', 'Nhava Sheva')
+                    parsed_africa['POL'] = parsed_africa['POL'].apply(standardize_pol)
+                    parsed_africa = parsed_africa[['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']]
+                    print(f"AFRICA parsed successfully: {parsed_africa.shape}")
+                    data.append(parsed_africa)
+                    if remarks:
+                        print(f"AFRICA remarks: {remarks}")
+                        info.append((sheet_name, remarks))
+                except Exception as e:
+                    print(f"Error parsing AFRICA sheet: {str(e)}")
+                    info.append((sheet_name, [f"Error parsing AFRICA sheet: {str(e)}"]))
+
+            # === LATAM ===
+            elif sheet_name_lower == "latam":
+                try:
+                    if "april" in month_year.lower():
+                        print(f"Warning: LATAM sheet found in April file, skipping")
+                        continue
+                    df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
+                    remarks = []
+                    data_start_row = None
+                    for idx, row in df_raw.iterrows():
+                        row_str = ' '.join(row.dropna().astype(str).str.strip())
+                        if sum(k in row_str.upper() for k in ['PORTS', "20'", "40'", "40'HC", 'DEST', 'DESTINATION']) >= 3:
+                            if idx + 1 < len(df_raw):
+                                next_row = df_raw.iloc[idx + 1].dropna().astype(str).str.strip()
+                                if any(next_row.str.isnumeric()) or any(next_row.str.contains(r'^[A-Za-z\s]+$', regex=True)):
+                                    data_start_row = idx
+                                    break
+                        for cell in row:
+                            if pd.notna(cell) and str(cell).strip():
+                                remarks.append(str(cell).strip())
+                    if data_start_row is None:
+                        print(f"No data table found in LATAM sheet")
+                        continue
+                    df_latam = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
+                    df_latam.columns = df_latam.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
+                    print(f"LATAM columns: {list(df_latam.columns)}")
+                    col_map = {
+                        'PORTS': 'PORT',
+                        "20'": '20',
+                        "40'": '40STD',
+                        "40'HC": '40HC'
+                    }
+                    print(f"LATAM column mapping: {col_map}")
+                    available_cols = [col for col in col_map.keys() if col in df_latam.columns]
+                    if not available_cols:
+                        print(f"No matching columns in LATAM")
+                        continue
+                    parsed_latam = df_latam[available_cols].rename(columns=col_map)
+                    print(f"Parsed LATAM columns after mapping: {list(parsed_latam.columns)}")
+                    if 'PORT' not in parsed_latam.columns:
+                        print("PORT column missing in LATAM after mapping")
+                        continue
+                    parsed_latam = parsed_latam[parsed_latam['PORT'].notna()]
+                    parsed_latam = parsed_latam[parsed_latam['PORT'].astype(str).str.strip() != '']
+                    parsed_latam = parsed_latam[~parsed_latam['PORT'].astype(str).str.lower().eq('port')]
+                    parsed_latam = parsed_latam[
+                        parsed_latam[['20', '40STD', '40HC']].apply(
+                            lambda x: pd.to_numeric(x, errors='coerce').notna().sum() > 0, axis=1
+                        )
+                    ]
+                    parsed_latam = parsed_latam[~parsed_latam['PORT'].astype(str).str.lower().str.contains('total|summary|footer|santos|la guaira', na=False)]
+                    invalid_rows = df_latam[~df_latam.index.isin(parsed_latam.index)]
+                    if not invalid_rows.empty:
+                        print(f"LATAM invalid rows: {invalid_rows[['PORTS', "20'", "40'", "40'HC"]].to_dict('records')}")
+                    if parsed_latam.empty:
+                        print("No valid data in LATAM after filtering")
+                        continue
+                    parsed_latam['PORT'] = parsed_latam['PORT'].astype(str).str.strip()
+                    for col in ['20', '40STD', '40HC']:
+                        if col in parsed_latam.columns:
+                            parsed_latam[col] = clean_numeric(parsed_latam[col])
+                        else:
+                            parsed_latam[col] = pd.NA
+                    parsed_latam['REMARKS'] = '; '.join(remarks) if remarks else ''
+                    parsed_latam['Sheet'] = sheet_name
+                    parsed_latam.insert(0, 'POL', 'Nhava Sheva')
+                    parsed_latam['POL'] = parsed_latam['POL'].apply(standardize_pol)
+                    parsed_latam = parsed_latam[['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']]
+                    print(f"LATAM parsed successfully: {parsed_latam.shape}")
+                    data.append(parsed_latam)
+                    if remarks:
+                        print(f"LATAM remarks: {remarks}")
+                        info.append((sheet_name, remarks))
+                except Exception as e:
+                    print(f"Error parsing LATAM sheet: {str(e)}")
+                    info.append((sheet_name, [f"Error parsing LATAM sheet: {str(e)}"]))
+
+            # === LUX Service for LAEC ===
+            elif sheet_name_lower.startswith("lux") and "laec" in sheet_name_lower:
+                try:
+                    if "april" in month_year.lower():
+                        print(f"Warning: LUX Service for LAEC sheet found in April file, skipping")
+                        continue
+                    df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
+                    remarks = []
+                    data_start_row = None
+                    for idx, row in df_raw.iterrows():
+                        row_str = ' '.join(row.dropna().astype(str).str.strip())
+                        if sum(k in row_str.upper() for k in ['PORTS', "20'", "40'", "40'HC", 'DEST', 'DESTINATION']) >= 3:
+                            if idx + 1 < len(df_raw):
+                                next_row = df_raw.iloc[idx + 1].dropna().astype(str).str.strip()
+                                if any(next_row.str.isnumeric()) or any(next_row.str.contains(r'^[A-Za-z\s]+$', regex=True)):
+                                    data_start_row = idx
+                                    break
+                        for cell in row:
+                            if pd.notna(cell) and str(cell).strip():
+                                remarks.append(str(cell).strip())
+                    if data_start_row is None:
+                        print(f"No data table found in LUX Service for LAEC sheet")
+                        continue
+                    df_lux = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
+                    df_lux.columns = df_lux.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
+                    print(f"LUX Service for LAEC columns: {list(df_lux.columns)}")
+                    col_map = {
+                        'PORTS': 'PORT',
+                        "20'": '20',
+                        "40'": '40STD',
+                        "40'HC": '40HC',
+                        'REMARK': 'REMARKS'
+                    }
+                    available_cols = [col for col in col_map.keys() if col in df_lux.columns]
+                    if not available_cols:
+                        print(f"No matching columns in LUX Service for LAEC")
+                        continue
+                    parsed_lux = df_lux[available_cols].rename(columns=col_map)
+                    print(f"Parsed LUX Service for LAEC columns after mapping: {list(parsed_lux.columns)}")
+                    if 'PORT' not in parsed_lux.columns:
+                        print("PORT column missing in LUX Service for LAEC after mapping")
+                        continue
+                    parsed_lux = parsed_lux[parsed_lux['PORT'].notna()]
+                    parsed_lux = parsed_lux[parsed_lux['PORT'].astype(str).str.strip() != '']
+                    parsed_lux = parsed_lux[~parsed_lux['PORT'].astype(str).str.lower().eq('port')]
+                    parsed_lux = parsed_lux[
+                        parsed_lux[['20', '40STD', '40HC']].apply(
+                            lambda x: pd.to_numeric(x, errors='coerce').notna().sum() > 0, axis=1
+                        )
+                    ]
+                    parsed_lux = parsed_lux[~parsed_lux['PORT'].astype(str).str.lower().str.contains('total|summary|footer', na=False)]
+                    if parsed_lux.empty:
+                        print("No valid data in LUX Service for LAEC after filtering")
+                        continue
+                    parsed_lux['PORT'] = parsed_lux['PORT'].astype(str).str.strip()
+                    for col in ['20', '40STD', '40HC']:
+                        if col in parsed_lux.columns:
+                            parsed_lux[col] = clean_numeric(parsed_lux[col])
+                        else:
+                            parsed_lux[col] = pd.NA
+                    parsed_lux['REMARKS'] = '; '.join(remarks) if remarks else ''
+                    parsed_lux['Sheet'] = sheet_name
+                    parsed_lux.insert(0, 'POL', 'Nhava Sheva')
+                    parsed_lux['POL'] = parsed_lux['POL'].apply(standardize_pol)
+                    parsed_lux = parsed_lux[['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']]
+                    print(f"LUX Service for LAEC parsed successfully: {parsed_lux.shape}")
+                    data.append(parsed_lux)
+                    if remarks:
+                        print(f"LUX Service for LAEC remarks: {remarks}")
+                        info.append((sheet_name, remarks))
+                except Exception as e:
+                    print(f"Error parsing LUX Service for LAEC sheet: {str(e)}")
+                    info.append((sheet_name, [f"Error parsing LUX Service for LAEC sheet: {str(e)}"]))
+
+        # Debug data list before concatenation
+        print(f"Data list contents: {[df.shape for df in data]}")
+        for idx, df in enumerate(data):
+            print(f"DataFrame {idx} columns: {list(df.columns)}")
+
+        # Combine all data
+        if data:
+            try:
+                final_df = pd.concat([df for df in data if not df.empty], ignore_index=True)
+                expected_cols = ['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']
+                if not all(col in final_df.columns for col in expected_cols):
+                    print(f"Warning: final_df missing expected columns. Found: {list(final_df.columns)}, Expected: {expected_cols}")
+                print(f"Final DataFrame shape: {final_df.shape}")
+            except Exception as e:
+                print(f"Error concatenating DataFrames: {str(e)}")
+                final_df = pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet'])
+        else:
+            print("No data to concatenate")
+            final_df = pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet'])
+
+        return final_df, info
+
     except Exception as e:
         print(f"Error in parse_one: {str(e)}")
-    return pd.concat([df for df in data if not df.empty], ignore_index=True) if data else pd.DataFrame(), info
+        return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'Sheet']), [("Error", [f"Error in parse_one: {str(e)}"])]
 
 def parse_msc(file, month_year):
     try:
-        df = pd.read_excel(file, header=None)
+        import io
+        import pdfplumber
+
+        def extract_dataframe_from_pdf(pdf_file):
+            all_rows = []
+            with pdfplumber.open(pdf_file) as pdf:
+                for page in pdf.pages:
+                    table = page.extract_table()
+                    if table:
+                        all_rows.extend(table)
+            return pd.DataFrame(all_rows)
+
+        # Determine file type
+        file_ext = str(file.name).lower()
+        if file_ext.endswith('.pdf'):
+            df = extract_dataframe_from_pdf(file)
+        else:
+            df = pd.read_excel(file, header=None)
+
+        # Locate data start row
         data_start = 0
         for idx, row in df.iterrows():
             if isinstance(row.iloc[0], str) and 'SECTOR' in row.iloc[0].upper():
                 data_start = idx + 1
                 break
+
         if data_start == 0:
             return pd.DataFrame(), []
+
         df_data = df.iloc[data_start:].reset_index(drop=True)
+
         parsed = pd.DataFrame({
             'PORT': df_data.iloc[:, 0].dropna().astype(str).str.strip(),
             '20': df_data.iloc[:, 1],
             '40STD': df_data.iloc[:, 2],
-            'REMARKS': df_data.iloc[:, 3].fillna('').astype(str).str.strip()  # Renamed from Description
+            'REMARKS': df_data.iloc[:, 3].fillna('').astype(str).str.strip()
         })
+
         parsed = parsed[parsed['PORT'].str.strip() != ''].dropna(subset=['PORT'])
         desired_columns = ['PORT', '20', '40STD', 'REMARKS']
         parsed = parsed.dropna(subset=desired_columns)
@@ -570,12 +916,16 @@ def parse_msc(file, month_year):
 
         parsed['20'] = parsed['20'].apply(extract_value_with_currency)
         parsed['40STD'] = parsed['40STD'].apply(extract_value_with_currency)
+
         parsed.insert(0, 'POL', 'Nhava Sheva')
-        parsed['POL'] = parsed['POL'].apply(standardize_pol)  # Standardize POL names
+        parsed['POL'] = parsed['POL'].apply(standardize_pol)
+
         return parsed, []
+
     except Exception as e:
         print(f"Error in parse_msc: {str(e)}")
         return pd.DataFrame(), []
+
 
 def parse_pil(file, month_year):
     try:
@@ -1040,90 +1390,109 @@ def parse_cosco_africa(file, month_year):
 
 def parse_cosco_fareast(file, month_year):
     try:
+        import re
+        import pdfplumber
         pols = ["Nhava Sheva", "Mundra", "Pipavav"]
         all_rows = []
         additional_info = []
 
-        # Flexible regex to handle variations in spacing and port names
-        pattern = re.compile(r"([A-Za-z\s\-/().,']+?)\s+(\d{2,6}(?:\.\d+)?)\s+(\d{2,6}(?:\.\d+)?)\s+(\d{2,6}(?:\.\d+)?)")
+        # Pattern: PORT + 3 values (number or 'CASE BY CASE')
+        pattern = re.compile(
+            r"([A-Za-z\s\-/().,'&]+?)\s+(CASE BY CASE|\d+(?:\.\d+)?)\s*(CASE BY CASE|\d+(?:\.\d+)?)\s*(CASE BY CASE|\d+(?:\.\d+)?)",
+            re.IGNORECASE
+        )
+
+        def parse_value(v):
+            v = v.upper().strip()
+            return v if "CASE" in v else float(v)
 
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
                 text = page.extract_text()
                 if not text:
                     continue
-                print(f"Raw text from page {page.page_number}:\n{text}\n")  # Debug: Log raw text
                 lines = [line.strip() for line in text.split('\n') if line.strip()]
-                
+
                 for line in lines:
-                    # Skip lines that are clearly not data
                     if line.startswith("*") or any(keyword in line.lower() for keyword in [
                         "rates are", "currently", "note", "booking", "surcharge",
                         "valid", "no service", "not accepting", "weight limitation"]):
                         additional_info.append(line)
-                        print(f"Filtered out as info: {line}")  # Debug
                         continue
 
-                    # Try to match the line
+                    # 🛠️ Fix glued tokens like 'CASE BY CASECASE BY CASE'
+                    line = re.sub(r'(CASE BY CASE)(CASE BY CASE)', r'\1 \2', line, flags=re.IGNORECASE)
+
                     matches = pattern.findall(line)
-                    print(f"Line: {line}, Matches: {matches}")  # Debug: Log matches
-                    for idx, match in enumerate(matches):
-                        port, r20, r40std, r40hc = match
-                        port = port.strip()
-                        if not port or len(port) < 3:  # Skip invalid ports
-                            continue
-                        pol = pols[idx % len(pols)]  # Cycle through POLs
-                        try:
-                            r20 = float(r20)
-                            r40std = float(r40std)
-                            r40hc = float(r40hc)
-                            if r20 <= 0 and r40std <= 0 and r40hc <= 0:  # Skip invalid rates
+                    if not matches:
+                        continue
+
+                    if len(matches) == 3:
+                        # Assign each match to Nhava Sheva, Mundra, Pipavav
+                        for i, match in enumerate(matches):
+                            port, r20, r40std, r40hc = match
+                            pol = pols[i]
+                            try:
+                                r20_val = parse_value(r20)
+                                r40std_val = parse_value(r40std)
+                                r40hc_val = parse_value(r40hc)
+
+                                all_rows.append({
+                                    'POL': pol,
+                                    'PORT': port.strip(),
+                                    '20': r20_val,
+                                    '40STD': r40std_val,
+                                    '40HC': r40hc_val,
+                                    'REMARKS': ''
+                                })
+                            except Exception as e:
+                                print(f"Error parsing CASE row: {e}")
+                    else:
+                        # Fallback: assign POLs in rotating order
+                        for idx, match in enumerate(matches):
+                            port, r20, r40std, r40hc = match
+                            pol = pols[idx % 3]
+                            try:
+                                r20_val = parse_value(r20)
+                                r40std_val = parse_value(r40std)
+                                r40hc_val = parse_value(r40hc)
+
+                                all_rows.append({
+                                    'POL': pol,
+                                    'PORT': port.strip(),
+                                    '20': r20_val,
+                                    '40STD': r40std_val,
+                                    '40HC': r40hc_val,
+                                    'REMARKS': ''
+                                })
+                            except Exception:
                                 continue
-                            all_rows.append({
-                                'POL': pol,
-                                'PORT': port,
-                                '20': r20,
-                                '40STD': r40std,
-                                '40HC': r40hc,
-                                'REMARKS': ''
-                            })
-                            print(f"Added record: POL={pol}, PORT={port}, 20={r20}, 40STD={r40std}, 40HC={r40hc}")  # Debug
-                        except ValueError as e:
-                            print(f"Error converting rates for line {line}: {str(e)}")  # Debug
-                            continue
 
         df = pd.DataFrame(all_rows)
-        print(f"Initial DataFrame:\n{df}\n")  # Debug: Log DataFrame
 
         if not df.empty:
-            # Clean and standardize data
             df['POL'] = df['POL'].apply(standardize_pol)
             df['PORT'] = df['PORT'].astype(str).str.strip()
             df = df[df['PORT'].notna() & (df['PORT'].str.strip() != '')]
-            df['REMARKS'] = df['REMARKS'].astype(str).str.strip().replace('', np.nan)
-            
-            # Format numeric columns
+
+            df['REMARKS'] = df['REMARKS'].astype(str).str.strip()
+            df['REMARKS'] = df['REMARKS'].replace('', np.nan)
+
             for col in ['20', '40STD', '40HC']:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-                df[col] = df[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else np.nan)
-            
-            # Sort by POL and PORT
+                df[col] = df[col].apply(lambda x: f"{x:.2f}" if isinstance(x, float) else x)
+
             df['POL_ORDER'] = df['POL'].map({'Nhava Sheva': 1, 'Mundra': 2, 'Pipavav': 3})
             df = df.sort_values(by=['POL_ORDER', 'PORT']).drop(columns=['POL_ORDER'])
-            
-            # Drop rows with all rates missing
             df = df.dropna(subset=['20', '40STD', '40HC'], how='all')
-            print(f"Final DataFrame:\n{df}\n")  # Debug: Log final DataFrame
 
         additional_info = list(dict.fromkeys(additional_info))
-        print(f"Additional Info: {additional_info}")  # Debug
         return df, additional_info
 
     except Exception as e:
-        print(f"Error parsing Cosco-Fareast file: {str(e)}")
-        return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS']), [f"Error parsing Cosco-Fareast file: {str(e)}"]    
-import pandas as pd
-import numpy as np
+        return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS']), [f"Error parsing Cosco-Fareast file: {str(e)}"]
+
+     
+
 from openpyxl import load_workbook
 import traceback
 import re
@@ -2076,12 +2445,20 @@ def save_to_firestore(vendor, month_year, df, info):
     batch.commit()
 
 def query_firestore(pol, pod, equipment):
+    # Dynamically get the current month-year in the format "YYYY-MMM"
+    current_date = datetime.now()  # Current date is May 09, 2025
+    current_month_year = f"{current_date.year}-{current_date.strftime('%b').upper()}"  # Format as "2025-MAY"
+    
     results = []
     vendors = ["MSC", "Wan Hai", "Emirates", "ONE MRG", "HMM MRG", "OOCL", "PIL MRG", "ARKAS MRG", "Interasia", "Cosco-Gulf", "Cosco-WCSA & CB", "Cosco-Africa", "Turkon", "Cosco-Fareast", "ZIM MRG"]
     for vendor in vendors:
         vendor_ref = db.collection('vendors').document(vendor).collection('data')
         docs = vendor_ref.stream()
         for doc in docs:
+            # Filter for current month-year only
+            if doc.id != current_month_year:
+                continue
+                
             doc_data = doc.to_dict()
             df = pd.DataFrame(doc_data.get("data", []))
             if df.empty:
@@ -2091,17 +2468,17 @@ def query_firestore(pol, pod, equipment):
             if 'POL' in df.columns:
                 df['POL'] = df['POL'].apply(standardize_pol)
 
-            # Apply POL filter
+            # Apply POL filter with exact match
             if 'POL' in df.columns and pol:
-                df = df[df['POL'].str.lower().str.contains(pol.lower(), na=False)]
+                df = df[df['POL'].str.lower() == pol.lower()]  # Exact match for POL
 
-            # Apply POD filter
+            # Apply POD filter with exact match
             if 'PORT' in df.columns and pod:
-                df = df[df['PORT'].str.lower().str.contains(pod.lower(), na=False)]
+                df = df[df['PORT'].str.lower() == pod.lower()]  # Exact match for PORT
                 # Ensure PORT is not empty or "None"
                 df = df[df['PORT'].ne('') & df['PORT'].ne('None')]
             elif 'POD' in df.columns and pod:  # Handle HMM MRG case
-                df = df[df['POD'].str.lower().str.contains(pod.lower(), na=False)]
+                df = df[df['POD'].str.lower() == pod.lower()]  # Exact match for POD
                 df = df[df['POD'].ne('') & df['POD'].ne('None')]
                 if not df.empty:
                     df = df.rename(columns={'POD': 'PORT'})  # Rename POD to PORT for display
@@ -2198,9 +2575,15 @@ def main_page():
     with col2:
         year = st.selectbox("Year", [2025, 2026, 2027, 2028, 2029, 2030], format_func=lambda x: str(x), help="Select the year for the data.")
     with col3:
-        vendor = st.selectbox("Vendor", ["MSC", "Wan Hai", "Emirates", "ONE MRG", "HMM MRG", "OOCL", "PIL MRG", "ARKAS MRG", "Interasia", "Cosco-Gulf", "Cosco-WCSA & CB", "Cosco-Africa", "Turkon", "Cosco-Fareast", "ZIM MRG"])
+        # Sort vendors alphabetically
+        vendors = sorted(["MSC", "Wan Hai", "Emirates", "ONE MRG", "HMM MRG", "OOCL", "PIL MRG", "ARKAS MRG", "Interasia", "Cosco-Gulf", "Cosco-WCSA & CB", "Cosco-Africa", "Turkon", "Cosco-Fareast", "ZIM MRG"])
+        vendor = st.selectbox("Vendor", vendors)
     month_year = f"{year}-{month[:3].upper()}"
-    uploaded_file = st.file_uploader("Upload Excel or PDF", type=['xlsx', 'pdf'])
+
+    # Use a key for the file uploader to control its state
+    if 'file_uploader_key' not in st.session_state:
+        st.session_state.file_uploader_key = 0
+    uploaded_file = st.file_uploader("Upload Excel or PDF", type=['xlsx', 'pdf'], key=f"uploader_{st.session_state.file_uploader_key}") 
 
     if uploaded_file and st.button("Parse and Store"):
         parser_map = {
@@ -2230,10 +2613,16 @@ def main_page():
                 mandatory_pols = {"Nhava Sheva", "Rajula", "Pipavav"}
                 st.session_state.pol_suggestions = sorted(list(set(pol_suggestions_from_db) | mandatory_pols))
                 st.success(f"Data for {vendor} ({month_year}) parsed and stored successfully! Overwritten if previously existed.")
+                # Clear the file uploader by incrementing the key and rerunning
+                st.session_state.file_uploader_key += 1
+                st.rerun()
             else:
                 st.warning(f"No data extracted for {vendor} ({month_year}). Check file format.")
         except Exception as e:
             st.error(f"Error parsing file: {str(e)}")
+            # Optionally clear on error as well
+            st.session_state.file_uploader_key += 1
+            st.rerun()
 
     # === Vendors Section ===
     st.subheader("Vendors")
@@ -2256,45 +2645,14 @@ def main_page():
                         st.session_state.selected_vendor = vendor
                         st.rerun()
 
-        # === Search Vendor Data Section ===
+    # === Search Vendor Data Section ===
     st.subheader("Search Vendor Data")
     col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
 
     with col1:
         pol_input = st.selectbox("POL (Type to search)", [""] + st.session_state.pol_suggestions, format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
     with col2:
-        # Initialize session state for POD filter
-        if 'pod_filter' not in st.session_state:
-            st.session_state.pod_filter = ""
-
-        # Get filtered POD options based on typed filter
-        def update_pod_filter():
-            # Update filter when selectbox changes
-            selected = st.session_state.pod_select
-            if selected != "":
-                st.session_state.pod_filter = selected
-                st.rerun()
-
-        # Filter suggestions based on pod_filter
-        pod_options = [""] + st.session_state.pod_suggestions
-        if st.session_state.pod_filter:
-            pod_options = [""] + [pod for pod in st.session_state.pod_suggestions if st.session_state.pod_filter.lower() in pod.lower()]
-            pod_options = sorted(pod_options)
-
-        pod_input = st.selectbox(
-            "POD/PORT (Type to search)",
-            pod_options,
-            format_func=lambda x: "" if x == "" else x,
-            key="pod_select",
-            help="Start typing to filter port suggestions",
-            on_change=update_pod_filter
-        )
-
-        # Sync typed input with filter
-        if pod_input != st.session_state.pod_filter:
-            st.session_state.pod_filter = pod_input if pod_input else ""
-            if pod_input:  # Only rerun if there's input to filter
-                st.rerun()
+        pod_input = st.selectbox("POD/PORT (Type to search)", [""] + st.session_state.pod_suggestions, format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
     with col3:
         carrier_input = st.selectbox("Carrier (Type to search)", [""] + vendors, format_func=lambda x: "" if x == "" else x, help="Start typing to see vendor names")
     with col4:
@@ -2318,6 +2676,18 @@ def main_page():
                 st.session_state.search_results = results
                 if st.session_state.search_results.empty:
                     st.info("No matching records found.")
+
+    if not st.session_state.search_results.empty:
+        st.subheader("Search Results")
+        display_columns = ['Vendor', 'Month-Year', 'POL', 'PORT'] + [e for e in equipment if e in st.session_state.search_results.columns]
+        additional_cols = ['REMARKS', 'ROUTING', 'TRANSIT TIME', 'VALIDITY', 'SERVICE NAME', 'SERVICE', 'EXPIRY DATE', 'Sheet', 'IMO SC PER TEU', '20 Haz', '40 Haz', "40'HRF"]
+        display_columns.extend([c for c in additional_cols if c in st.session_state.search_results.columns])
+        # Ensure POL is displayed consistently and rename POD to PORT for HMM MRG
+        if 'POL' in st.session_state.search_results.columns:
+            st.session_state.search_results['POL'] = st.session_state.search_results['POL'].apply(standardize_pol)
+        if 'POD' in st.session_state.search_results.columns:
+            st.session_state.search_results = st.session_state.search_results.rename(columns={'POD': 'PORT'})
+        st.dataframe(st.session_state.search_results[display_columns])
 
 def vendor_page():
     vendor = st.session_state.selected_vendor
@@ -2359,23 +2729,8 @@ def vendor_page():
                     if col in df.columns:
                         df_values.update(df[col].dropna().apply(normalize_text))
                 filtered_info = [line for line in info if normalize_text(line) not in df_values and line.strip()]
-            else:
-                filtered_info = info
 
-            if filtered_info or ('Sheet' in df.columns and df['Sheet'].dropna().unique().size > 0):
-                st.subheader("Additional Information")
-                if 'Sheet' in df.columns:
-                    unique_sheets = df['Sheet'].dropna().unique()
-                    if len(unique_sheets) > 0:
-                        st.write("**Sheets:**")
-                        for sheet in unique_sheets:
-                            st.write(f"- {sheet}")
-                if filtered_info:
-                    st.write("**Details:**")
-                    for line in filtered_info:
-                        st.write(f"- {line}")
-
-            if not df.empty:
+                # Display Data section first
                 st.subheader("Data")
                 # Ensure POL is displayed consistently and rename POD to PORT for HMM MRG
                 if 'POL' in df.columns:
@@ -2424,6 +2779,7 @@ def vendor_page():
 
                 st.dataframe(df)
 
+                # Excel download button (after Data section, before Additional Information)
                 output_file = f"{vendor}_{month_year}.xlsx"
                 excel_buffer = io.BytesIO()
                 with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
@@ -2457,6 +2813,36 @@ def vendor_page():
                     file_name=output_file,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
+
+                # Display Additional Information section after the table
+                if filtered_info or ('Sheet' in df.columns and df['Sheet'].dropna().unique().size > 0):
+                    st.subheader("Additional Information")
+                    if 'Sheet' in df.columns:
+                        unique_sheets = df['Sheet'].dropna().unique()
+                        if len(unique_sheets) > 0:
+                            st.write("**Sheets:**")
+                            for sheet in unique_sheets:
+                                st.write(f"- {sheet}")
+                    if filtered_info:
+                        st.write("**Details:**")
+                        for line in filtered_info:
+                            st.write(f"- {line}")
+            else:
+                filtered_info = info
+                st.warning("No data available for this period.")
+                # Still display Additional Information if it exists
+                if filtered_info or ('Sheet' in df.columns and df['Sheet'].dropna().unique().size > 0):
+                    st.subheader("Additional Information")
+                    if 'Sheet' in df.columns:
+                        unique_sheets = df['Sheet'].dropna().unique()
+                        if len(unique_sheets) > 0:
+                            st.write("**Sheets:**")
+                            for sheet in unique_sheets:
+                                st.write(f"- {sheet}")
+                    if filtered_info:
+                        st.write("**Details:**")
+                        for line in filtered_info:
+                            st.write(f"- {line}")
 
             if st.button(f"Delete {month_year}", key=f"delete_{month_year}"):
                 delete_from_firestore(vendor, month_year)
