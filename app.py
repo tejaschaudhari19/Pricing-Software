@@ -149,9 +149,16 @@ def parse_oocl(file, month_year):
             df['POL'] = df['POL'].apply(lambda x: next((pol for pol in valid_pols if pol.lower() in x.lower()), ''))
             df = df[df['POL'] != '']
             df = df[df['PORT'].notna()]
-            df['20'] = clean_numeric(df['20'])
-            df['40STD'] = clean_numeric(df['40STD'])
-            df['40HC'] = clean_numeric(df['40HC'])
+            # Clean numeric columns, remove decimal points, and add $ symbol
+            df['20'] = clean_numeric(df['20']).apply(
+                lambda x: f'${int(x)}' if pd.notna(x) and x != 0 else np.nan
+            )
+            df['40STD'] = clean_numeric(df['40STD']).apply(
+                lambda x: f'${int(x)}' if pd.notna(x) and x != 0 else np.nan
+            )
+            df['40HC'] = clean_numeric(df['40HC']).apply(
+                lambda x: f'${int(x)}' if pd.notna(x) and x != 0 else np.nan
+            )
             data.append(df)
         except ValueError:
             continue
@@ -177,10 +184,12 @@ def parse_emirates(file, month_year):
                     return pd.DataFrame(), []
                 terms_conditions = []
                 terms_active = False
+                # Add sheet name once at the beginning of the terms
                 for idx, row in df.iterrows():
                     for cell in row:
                         if isinstance(cell, str) and 'Terms & Conditions' in cell:
                             terms_active = True
+                            terms_conditions.append(f"Sheet: {sheet}")
                             continue
                         if terms_active and isinstance(cell, str) and cell.strip():
                             cell_text = cell.strip()
@@ -216,8 +225,13 @@ def parse_emirates(file, month_year):
                 df = df[list(selected_cols.keys())].rename(columns=selected_cols)
                 header_row = df.columns[0]
                 df = df[df['PORT'] != header_row]
-                df['20'] = clean_numeric(df['20'])
-                df['40HC'] = clean_numeric(df['40HC'])
+                # Clean numeric columns and remove decimal points
+                df['20'] = clean_numeric(df['20']).apply(
+                    lambda x: str(int(x)) if pd.notna(x) and x != 0 else np.nan
+                )
+                df['40HC'] = clean_numeric(df['40HC']).apply(
+                    lambda x: str(int(x)) if pd.notna(x) and x != 0 else np.nan
+                )
                 if 'REMARKS' in df.columns and 'Notes Surcharges / Subject To' in df.columns:
                     df['REMARKS'] = df['REMARKS'].fillna('') + ' ' + df['Notes Surcharges / Subject To'].fillna('')
                     df = df.drop(columns=['Notes Surcharges / Subject To'])
@@ -249,6 +263,7 @@ def parse_emirates(file, month_year):
 
 def parse_hmm(file, month_year):
     try:
+        # Read the main rate sheet
         df = pd.read_excel(file, sheet_name="HMM Rate Sheet ")
         df.columns = df.iloc[0]
         df = df.drop(index=0).reset_index(drop=True)
@@ -287,23 +302,32 @@ def parse_hmm(file, month_year):
         parsed['POL'] = parsed['POL'].astype(str).str.strip().replace('nan', '')
         parsed['POL'] = parsed['POL'].apply(standardize_pol)  # Standardize POL names
         parsed['PORT'] = parsed['PORT'].astype(str).str.strip().replace('nan', '')
-        parsed['20'] = clean_numeric(parsed['20'])
+
+        # Clean numeric columns and remove decimal points
+        parsed['20'] = clean_numeric(parsed['20']).apply(
+            lambda x: str(int(x)) if pd.notna(x) and x != 0 else np.nan
+        )
 
         if '40STD' in parsed.columns:
-            parsed['40STD'] = clean_numeric(parsed['40STD'])
+            parsed['40STD'] = clean_numeric(parsed['40STD']).apply(
+                lambda x: str(int(x)) if pd.notna(x) and x != 0 else np.nan
+            )
         else:
             parsed['40STD'] = np.nan
 
         if '40HC' in parsed.columns:
-            parsed['40HC'] = clean_numeric(parsed['40HC'])
+            parsed['40HC'] = clean_numeric(parsed['40HC']).apply(
+                lambda x: str(int(x)) if pd.notna(x) and x != 0 else np.nan
+            )
         else:
             parsed['40HC'] = np.nan
 
         parsed = parsed[['POL', 'PORT', '20', '40STD', '40HC']]
 
+        # Apply currency symbol without decimal points
         def apply_currency(value):
-            if pd.notna(value) and isinstance(value, (int, float)):
-                return f"{value:.2f} $"
+            if pd.notna(value) and value != 'nan':
+                return f"{value} $"
             return value
 
         parsed['20'] = parsed['20'].apply(apply_currency)
@@ -321,16 +345,29 @@ def parse_hmm(file, month_year):
         # Remove rows where PORT is empty or "None"
         parsed = parsed[parsed['PORT'].ne('') & parsed['PORT'].ne('None')]
 
-        if parsed['40STD'].isna().all():
+        if '40STD' in parsed.columns and parsed['40STD'].isna().all():
             parsed = parsed.drop(columns=['40STD'])
-        if parsed['40HC'].isna().all():
+        if '40HC' in parsed.columns and parsed['40HC'].isna().all():
             parsed = parsed.drop(columns=['40HC'])
 
-        return parsed, []
+        # Extract Terms and Conditions as Additional Information
+        additional_info = []
+        try:
+            terms_df = pd.read_excel(file, sheet_name="Terms and Conditions", header=None)
+            for idx, row in terms_df.iterrows():
+                for cell in row:
+                    if pd.notna(cell) and str(cell).strip():
+                        additional_info.append(str(cell).strip())
+        except Exception as e:
+            print(f"Error reading Terms and Conditions sheet: {str(e)}")
+            additional_info.append(f"Error reading Terms and Conditions sheet: {str(e)}")
+
+        return parsed, additional_info
+
     except Exception as e:
         print(f"Error parsing HMM file: {str(e)}")
-        return pd.DataFrame(), []
-
+        return pd.DataFrame(), [f"Error parsing HMM file: {str(e)}"]
+    
 def parse_wan_hai(file, month_year):
     try:
         doc = fitz.open(stream=file.read(), filetype="pdf")
@@ -374,480 +411,303 @@ def parse_one(file, month_year):
         for sheet_name in sheets:
             sheet_name_lower = sheet_name.lower().strip()
 
-            # === FAREAST and GULF ===
-            if "fareast" in sheet_name_lower and "gulf" in sheet_name_lower:
-                try:
-                    df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
-                    # Extract remarks before data table
-                    remarks = []
+            # Helper function to parse a table from a sheet
+            def parse_table(df_raw, sheet_name, keywords, col_map, required_cols, is_latam=False):
+                remarks = []
+                data_frames = []
+                current_row = 0
+
+                while current_row < len(df_raw):
+                    # Look for table start
                     data_start_row = None
-                    for idx, row in df_raw.iterrows():
+                    for idx in range(current_row, len(df_raw)):
+                        row = df_raw.iloc[idx]
                         row_str = ' '.join(row.dropna().astype(str).str.strip())
-                        if sum(k in row_str.upper() for k in ['FPD', 'PORT', 'DEST', 'DESTINATION', "20'", "40'", 'HCD']) >= 2:
+                        if not row_str.strip():  # Skip blank rows
+                            continue
+                        # Check for table start based on keywords
+                        if sum(k in row_str.upper() for k in keywords) >= 2:
                             if idx + 1 < len(df_raw):
                                 next_row = df_raw.iloc[idx + 1].dropna().astype(str).str.strip()
-                                if any(next_row.str.isnumeric()) or any(next_row.str.contains(r'^[A-Za-z\s]+$', regex=True)):
+                                if not next_row.empty and (next_row.str.isnumeric().any() or next_row.str.contains(r'^[A-Za-z\s]+$', regex=True).any()):
                                     data_start_row = idx
                                     break
+                        # Collect remarks without numbering or bullets
                         for cell in row:
                             if pd.notna(cell) and str(cell).strip():
                                 remarks.append(str(cell).strip())
                     if data_start_row is None:
-                        print(f"No data table found in FAREAST and GULF sheet")
-                        continue
-                    df_fg = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
-                    # Clean column names
-                    df_fg.columns = df_fg.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
-                    # Print raw column names for debugging
-                    print(f"FAREAST and GULF columns: {list(df_fg.columns)}")
-                    # Map columns
-                    col_map = {}
-                    for col in df_fg.columns:
-                        col_lower = col.lower().strip()
-                        if any(k in col_lower for k in ['fpd', 'port', 'dest', 'destination']):
-                            col_map[col] = 'PORT'
-                        elif any(k in col_lower for k in ["20'", '20d', '20dc', '20 dc', '20 ', "20'd"]):
-                            col_map[col] = '20'
-                        elif any(k in col_lower for k in ['40hc', 'hcd', '40 hc', '40high', '40 high']):
-                            col_map[col] = '40HC'
-                        elif any(k in col_lower for k in ["40'", '40d', '40std', '40 std', '40 ', "40'd"]):
-                            col_map[col] = '40STD'
-                        elif 'country' in col_lower:
-                            col_map[col] = 'POD COUNTRY'
-                        elif any(k in col_lower for k in ['remark', 'rate structure', 'surcharges group']):
-                            col_map[col] = 'REMARKS'
-                    # Validate required columns
-                    required_cols = ['PORT', '20', '40STD', '40HC']
-                    if not all(k in col_map.values() for k in required_cols):
-                        print(f"Missing required columns in FAREAST and GULF: {required_cols}, Mapped: {col_map}")
-                        continue
-                    parsed_fg = df_fg[list(col_map.keys())].rename(columns=col_map)
-                    # Ensure PORT column is valid
-                    if 'PORT' not in parsed_fg.columns:
-                        print("PORT column missing in FAREAST and GULF after mapping")
-                        continue
-                    # Debug DataFrame state
-                    print(f"FAREAST and GULF before filtering: {parsed_fg.shape}")
-                    # Filter rows with valid PORT
-                    parsed_fg = parsed_fg[parsed_fg['PORT'].notna()]
-                    print(f"FAREAST and GULF after notna filter: {parsed_fg.shape}")
-                    if parsed_fg.empty:
-                        print("No valid PORT data in FAREAST and GULF after notna filter")
-                        continue
+                        break
+
+                    # Read table dynamically until an empty row or end of table
                     try:
-                        parsed_fg = parsed_fg[parsed_fg['PORT'].astype(str).str.strip() != '']
-                        print(f"FAREAST and GULF after strip filter: {parsed_fg.shape}")
-                        if parsed_fg.empty:
-                            print("No valid PORT data in FAREAST and GULF after strip filter")
+                        # Determine the number of rows to read
+                        max_rows = 150
+                        for i in range(data_start_row + 1, min(len(df_raw), data_start_row + max_rows + 1)):
+                            row = df_raw.iloc[i]
+                            row_str = ' '.join(row.dropna().astype(str).str.strip())
+                            if not row_str.strip():  # Stop at the first blank row
+                                max_rows = i - data_start_row
+                                break
+
+                        df = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row, nrows=max_rows)
+                        df.columns = df.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
+                        print(f"{sheet_name} columns: {list(df.columns)}")
+
+                        # Skip if the DataFrame is empty or has no valid columns
+                        if df.empty or len(df.columns) == 0:
+                            print(f"Skipping empty table in {sheet_name} at row {data_start_row}")
+                            current_row = data_start_row + 1
                             continue
-                        parsed_fg = parsed_fg[~parsed_fg['PORT'].astype(str).str.lower().eq('port')]
-                        print(f"FAREAST and GULF after port filter: {parsed_fg.shape}")
-                        if parsed_fg.empty:
-                            print("No valid data in FAREAST and GULF after port filter")
+
+                        # For LATAM or LUX Service, handle remarks columns (combine REMARK and last column if both exist)
+                        if is_latam and len(df.columns) > 1:
+                            last_col = df.columns[-1]
+                            remark_cols = [col for col in df.columns if col.lower() == 'remark']
+                            if remark_cols and remark_cols[0] != last_col:
+                                df['REMARKS'] = df[remark_cols[0]].combine_first(df[last_col])
+                                df = df.drop(columns=[remark_cols[0], last_col])
+                            else:
+                                df = df.rename(columns={last_col: 'REMARKS'})
+                            print(f"Renamed last column '{last_col}' to 'REMARKS' for {sheet_name}")
+
+                        # Apply column mapping
+                        mapped_cols = {}
+                        used_targets = set()
+                        for col in df.columns:
+                            col_lower = col.lower().strip()
+                            if is_latam and col == 'REMARKS':
+                                mapped_cols[col] = 'REMARKS'
+                                used_targets.add('REMARKS')
+                                continue
+                            for key, value in col_map.items():
+                                if any(k in col_lower for k in key) and value not in used_targets:
+                                    mapped_cols[col] = value
+                                    used_targets.add(value)
+                                    break
+
+                        # Validate required columns
+                        if not all(k in mapped_cols.values() for k in required_cols):
+                            print(f"Missing required columns in {sheet_name}: {required_cols}, Mapped: {mapped_cols}")
+                            current_row = data_start_row + max_rows
                             continue
-                        parsed_fg['PORT'] = parsed_fg['PORT'].astype(str).str.strip()
-                    except Exception as e:
-                        print(f"Error in FAREAST and GULF filtering: {str(e)}")
-                        continue
-                    # Clean numeric columns with error handling
-                    for col in ['20', '40STD', '40HC']:
-                        if col in parsed_fg.columns:
-                            try:
-                                parsed_fg[col] = clean_numeric(parsed_fg[col])
-                            except Exception as e:
-                                print(f"Error cleaning numeric column {col} in FAREAST and GULF: {str(e)}")
-                                parsed_fg[col] = pd.NA
+
+                        parsed_df = df[list(mapped_cols.keys())].rename(columns=mapped_cols)
+
+                        # Filter valid rows
+                        if 'PORT' in parsed_df.columns:
+                            parsed_df = parsed_df[~parsed_df['PORT'].astype(str).str.lower().isin(['port', 'ports', 'destination', 'dest'])]
+                            parsed_df = parsed_df[~parsed_df['PORT'].astype(str).str.lower().str.contains('total|summary', na=False)]
+                            parsed_df = parsed_df[parsed_df['PORT'].notna()]
+                            parsed_df = parsed_df[parsed_df['PORT'].astype(str).str.strip() != '']
+                            parsed_df['PORT'] = parsed_df['PORT'].astype(str).str.strip()
                         else:
-                            parsed_fg[col] = pd.NA
-                    # Handle other columns safely
-                    try:
-                        parsed_fg['POD COUNTRY'] = parsed_fg.get('POD COUNTRY', '').astype(str).str.strip().replace('nan', '')
-                        if 'REMARKS' in parsed_fg.columns:
-                            parsed_fg['REMARKS'] = parsed_fg['REMARKS'].astype(str).str.strip().replace('nan', '')
+                            print(f"PORT column missing in {sheet_name} after mapping")
+                            current_row = data_start_row + max_rows
+                            continue
+
+                        # Clean numeric columns and remove decimal points
+                        for col in ['20', '40STD', '40HC']:
+                            if col in parsed_df.columns:
+                                parsed_df[col] = clean_numeric(parsed_df[col]).apply(
+                                    lambda x: str(int(x)) if pd.notna(x) and x != 0 else np.nan
+                                )
+                            else:
+                                parsed_df[col] = np.nan
+
+                        # Remove decimal points from TRANSIT TIME
+                        if 'TRANSIT TIME' in parsed_df.columns:
+                            parsed_df['TRANSIT TIME'] = parsed_df['TRANSIT TIME'].apply(
+                                lambda x: str(int(float(x))) if pd.notna(x) and x != '' and float(x) != 0 else np.nan
+                            )
+
+                        # Exclude rows where all rate columns are NaN
+                        rate_cols = [col for col in ['20', '40STD', '40HC'] if col in parsed_df.columns]
+                        if rate_cols:
+                            parsed_df = parsed_df[parsed_df[rate_cols].notna().any(axis=1)]
+                        else:
+                            print(f"No rate columns found in {sheet_name}, skipping NaN rate filter")
+
+                        # Handle remarks: Apply the same remark to all rows in the table for LATAM or LUX Service
+                        if is_latam and 'REMARKS' in parsed_df.columns:
+                            if parsed_df['REMARKS'].notna().any():
+                                remark_value = parsed_df['REMARKS'].dropna().iloc[0]
+                            else:
+                                remark_value = ''
+                            parsed_df['REMARKS'] = remark_value
+                            print(f"Applied remark '{remark_value}' to all rows in {sheet_name} table")
+                        elif 'REMARKS' in parsed_df.columns:
+                            parsed_df['REMARKS'] = parsed_df['REMARKS'].astype(str).str.strip().replace('nan', '')
+                        else:
+                            parsed_df['REMARKS'] = ''
+
+                        # Add POL and Sheet
+                        parsed_df.insert(0, 'POL', 'Nhava Sheva')
+                        parsed_df['POL'] = parsed_df['POL'].apply(standardize_pol)
+                        parsed_df['Sheet'] = sheet_name
+
+                        # Ensure unique column names
+                        parsed_df.columns = pd.Index([f"{col}_{i}" if parsed_df.columns.duplicated().any() else col 
+                                                     for i, col in enumerate(parsed_df.columns)])
+
+                        print(f"{sheet_name} parsed successfully: {parsed_df.shape}")
+                        data_frames.append(parsed_df)
+
+                        # Move current_row to the end of the parsed table
+                        current_row = data_start_row + max_rows
+
+                        # Add remarks to info with the new format
+                        if remarks:
+                            info.append(f"* Sheet : {sheet_name}")
+                            info.extend(remarks)
+                            info.append("")  # Add a blank line after each sheet's remarks
                     except Exception as e:
-                        print(f"Error processing POD COUNTRY or REMARKS in FAREAST and GULF: {str(e)}")
-                    parsed_fg.insert(0, 'POL', 'Nhava Sheva')
-                    parsed_fg['POL'] = parsed_fg['POL'].apply(standardize_pol)
-                    parsed_fg = parsed_fg.drop(columns=['POD COUNTRY'], errors='ignore')
-                    print(f"FAREAST and GULF parsed successfully: {parsed_fg.shape}")
-                    data.append(parsed_fg)
-                    info.extend(remarks)
-                except Exception as e:
-                    print(f"Error parsing FAREAST and GULF sheet: {str(e)}")
-                    info.append(f"Error parsing FAREAST and GULF sheet: {str(e)}")
+                        print(f"Error parsing table in {sheet_name} at row {data_start_row}: {str(e)}")
+                        # If info doesn't already have the sheet name, add it
+                        if not info or info[-1] != f"* Sheet : {sheet_name}":
+                            info.append(f"* Sheet : {sheet_name}")
+                        info.append(f"Error parsing table in {sheet_name} at row {data_start_row}: {str(e)}")
+                        info.append("")  # Add a blank line after the error
+                        current_row = data_start_row + 1
+
+                return data_frames, remarks
+
+            # === FAREAST and GULF ===
+            if "fareast" in sheet_name_lower and "gulf" in sheet_name_lower:
+                col_map = {
+                    ('fpd', 'port', 'dest', 'destination'): 'PORT',
+                    ("20'", '20d', '20dc', '20 dc', '20 ', "20'd"): '20',
+                    ('40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"): '40HC',
+                    ("40'", '40d', '40std', '40 std', '40 ', "40'd"): '40STD',
+                    ('country',): 'POD COUNTRY',
+                    ('remark', 'rate structure', 'surcharges group'): 'REMARKS'
+                }
+                keywords = ['FPD', 'PORT', 'DEST', 'DESTINATION', "20'", "40'", 'HCD']
+                required_cols = ['PORT', '20', '40STD', '40HC']
+                dfs, _ = parse_table(pd.read_excel(file, sheet_name=sheet_name, header=None), sheet_name, keywords, col_map, required_cols)
+                data.extend(dfs)
 
             # === EUR and MED ===
             elif "eur" in sheet_name_lower and "med" in sheet_name_lower:
-                try:
-                    df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
-                    remarks = []
-                    data_start_row = None
-                    for idx, row in df_raw.iterrows():
-                        row_str = ' '.join(row.dropna().astype(str).str.strip())
-                        if sum(k in row_str.upper() for k in ['DEL DESCRIPTION', 'OFT 20', 'OFT 40', 'OFT HC']) >= 2:
-                            data_start_row = idx
-                            break
-                        for cell in row:
-                            if pd.notna(cell) and str(cell).strip():
-                                remarks.append(str(cell).strip())
-                    if data_start_row is None:
-                        continue
-                    df_eur_med = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
-                    df_eur_med.columns = df_eur_med.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
-                    col_map = {
-                        'DEL Description': 'PORT',
-                        'OFT 20': '20',
-                        'OFT 40': '40STD',
-                        'OFT HC': '40HC',
-                        'Expiry Date': 'EXPIRY DATE',
-                        'Remarks': 'REMARKS',
-                        'Rate Structure': 'REMARKS',
-                        'Surcharges group': 'REMARKS'
-                    }
-                    available_cols = [col for col in col_map.keys() if col in df_eur_med.columns]
-                    if not available_cols:
-                        continue
-                    parsed_eur_med = df_eur_med[available_cols].rename(columns=col_map)
-                    if 'PORT' not in parsed_eur_med.columns:
-                        continue
-                    parsed_eur_med = parsed_eur_med[parsed_eur_med['PORT'].notna()]
-                    parsed_eur_med = parsed_eur_med[parsed_eur_med['PORT'].astype(str).str.strip() != '']
-                    parsed_eur_med = parsed_eur_med[~parsed_eur_med['PORT'].astype(str).str.lower().eq('port')]
-                    for col in ['20', '40STD', '40HC']:
-                        if col in parsed_eur_med.columns:
-                            parsed_eur_med[col] = clean_numeric(parsed_eur_med[col])
-                        else:
-                            parsed_eur_med[col] = pd.NA
-                    parsed_eur_med['PORT'] = parsed_eur_med['PORT'].astype(str).str.strip()
-                    if 'EXPIRY DATE' in parsed_eur_med.columns:
-                        parsed_eur_med['EXPIRY DATE'] = pd.to_datetime(parsed_eur_med['EXPIRY DATE'], errors='coerce').dt.strftime('%Y-%m-%d')
-                    if 'REMARKS' in parsed_eur_med.columns:
-                        parsed_eur_med['REMARKS'] = parsed_eur_med['REMARKS'].astype(str).str.strip().replace('nan', '')
-                    parsed_eur_med.insert(0, 'POL', 'Nhava Sheva')
-                    parsed_eur_med['POL'] = parsed_eur_med['POL'].apply(standardize_pol)
-                    print(f"EUR and MED parsed successfully: {parsed_eur_med.shape}")
-                    data.append(parsed_eur_med)
-                    info.extend(remarks)
-                except Exception as e:
-                    print(f"Error parsing EUR and MED sheet: {str(e)}")
-                    info.append(f"Error parsing EUR and MED sheet: {str(e)}")
+                col_map = {
+                    ('del description',): 'PORT',
+                    ('oft 20',): '20',
+                    ('oft 40',): '40STD',
+                    ('oft hc',): '40HC',
+                    ('expiry date',): 'EXPIRY DATE',
+                    ('remarks', 'rate structure', 'surcharges group', 'include surcharge'): 'REMARKS'
+                }
+                keywords = ['DEL DESCRIPTION', 'OFT 20', 'OFT 40', 'OFT HC']
+                required_cols = ['PORT', '20', '40STD', '40HC']
+                dfs, _ = parse_table(pd.read_excel(file, sheet_name=sheet_name, header=None), sheet_name, keywords, col_map, required_cols)
+                for df in dfs:
+                    if 'EXPIRY DATE' in df.columns:
+                        df['EXPIRY DATE'] = pd.to_datetime(df['EXPIRY DATE'], errors='coerce').dt.strftime('%Y-%m-%d')
+                data.extend(dfs)
 
             # === AUS and NZ ===
             elif "aus" in sheet_name_lower and "nz" in sheet_name_lower:
-                try:
-                    df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
-                    remarks = []
-                    data_start_row = None
-                    for idx, row in df_raw.iterrows():
-                        row_str = ' '.join(row.dropna().astype(str).str.strip())
-                        if sum(k in row_str.upper() for k in ['PORT', "20'", "40'", "40'HC", 'DEST', 'DESTINATION']) >= 2:
-                            if idx + 1 < len(df_raw):
-                                next_row = df_raw.iloc[idx + 1].dropna().astype(str).str.strip()
-                                if any(next_row.str.isnumeric()) or any(next_row.str.contains(r'^[A-Za-z\s]+$', regex=True)):
-                                    data_start_row = idx
-                                    break
-                        for cell in row:
-                            if pd.notna(cell) and str(cell).strip():
-                                remarks.append(str(cell).strip())
-                    if data_start_row is None:
-                        print(f"No data table found in AUS and NZ sheet")
-                        continue
-                    df_aus_nz = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
-                    df_aus_nz.columns = df_aus_nz.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
-                    # Print raw column names for debugging
-                    print(f"AUS and NZ columns: {list(df_aus_nz.columns)}")
-                    # Map columns
-                    col_map = {}
-                    for col in df_aus_nz.columns:
-                        col_lower = col.lower().strip()
-                        if any(k in col_lower for k in ['port', 'dest', 'destination']):
-                            col_map[col] = 'PORT'
-                        elif any(k in col_lower for k in ["20'", '20d', '20dc', '20 dc', '20 ', "20'd"]):
-                            col_map[col] = '20'
-                        elif any(k in col_lower for k in ['40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"]):
-                            col_map[col] = '40HC'
-                        elif any(k in col_lower for k in ["40'", '40d', '40std', '40 std', '40 ', "40'd"]):
-                            col_map[col] = '40STD'
-                        elif any(k in col_lower for k in ['remark', 'rate structure', 'surcharges group']):
-                            col_map[col] = 'REMARKS'
-                    # Validate required columns
-                    required_cols = ['PORT', '20', '40STD', '40HC']
-                    if not all(k in col_map.values() for k in required_cols):
-                        print(f"Missing required columns in AUS and NZ: {required_cols}, Mapped: {col_map}")
-                        continue
-                    parsed_aus_nz = df_aus_nz[list(col_map.keys())].rename(columns=col_map)
-                    if 'PORT' not in parsed_aus_nz.columns:
-                        print("PORT column missing in AUS and NZ after mapping")
-                        continue
-                    parsed_aus_nz = parsed_aus_nz[parsed_aus_nz['PORT'].notna()]
-                    if parsed_aus_nz.empty:
-                        print("No valid PORT data in AUS and NZ after notna filter")
-                        continue
-                    parsed_aus_nz = parsed_aus_nz[parsed_aus_nz['PORT'].astype(str).str.strip() != '']
-                    if parsed_aus_nz.empty:
-                        print("No valid PORT data in AUS and NZ after strip filter")
-                        continue
-                    parsed_aus_nz = parsed_aus_nz[parsed_aus_nz['PORT'].astype(str).str.lower() != 'port']
-                    if parsed_aus_nz.empty:
-                        print("No valid data in AUS and NZ after port filter")
-                        continue
-                    parsed_aus_nz['PORT'] = parsed_aus_nz['PORT'].astype(str).str.strip()
-                    for col in ['20', '40STD', '40HC']:
-                        if col in parsed_aus_nz.columns:
-                            parsed_aus_nz[col] = clean_numeric(parsed_aus_nz[col])
-                        else:
-                            parsed_aus_nz[col] = pd.NA
-                    if 'REMARKS' in parsed_aus_nz.columns:
-                        parsed_aus_nz['REMARKS'] = parsed_aus_nz['REMARKS'].astype(str).str.strip().replace('nan', '')
-                    parsed_aus_nz.insert(0, 'POL', 'Nhava Sheva')
-                    parsed_aus_nz['POL'] = parsed_aus_nz['POL'].apply(standardize_pol)
-                    parsed_aus_nz['Sheet'] = sheet_name
-                    print(f"AUS and NZ parsed successfully: {parsed_aus_nz.shape}")
-                    data.append(parsed_aus_nz)
-                    info.extend(remarks)
-                except Exception as e:
-                    print(f"Error parsing AUS and NZ sheet: {str(e)}")
-                    info.append(f"Error parsing AUS and NZ sheet: {str(e)}")
+                col_map = {
+                    ('port', 'dest', 'destination'): 'PORT',
+                    ("20'", '20d', '20dc', '20 dc', '20 ', "20'd"): '20',
+                    ('40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"): '40HC',
+                    ("40'", '40d', '40std', '40 std', '40 ', "40'd"): '40STD',
+                    ('remark', 'rate structure', 'surcharges group'): 'REMARKS',
+                    ('t/t',): 'TRANSIT TIME'
+                }
+                keywords = ['PORT', "20'", "40'", "40'HC", 'DEST', 'DESTINATION']
+                required_cols = ['PORT', '20', '40STD', '40HC']
+                dfs, _ = parse_table(pd.read_excel(file, sheet_name=sheet_name, header=None), sheet_name, keywords, col_map, required_cols)
+                data.extend(dfs)
 
             # === AFRICA ===
             elif "africa" in sheet_name_lower:
-                try:
-                    df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
-                    remarks = []
-                    data_start_row = None
-                    for idx, row in df_raw.iterrows():
-                        row_str = ' '.join(row.dropna().astype(str).str.strip())
-                        if sum(k in row_str.upper() for k in ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION']) >= 2:
-                            if idx + 1 < len(df_raw):
-                                next_row = df_raw.iloc[idx + 1].dropna().astype(str).str.strip()
-                                if any(next_row.str.isnumeric()) or any(next_row.str.contains(r'^[A-Za-z\s]+$', regex=True)):
-                                    data_start_row = idx
-                                    break
-                        for cell in row:
-                            if pd.notna(cell) and str(cell).strip():
-                                remarks.append(str(cell).strip())
-                    if data_start_row is None:
-                        print(f"No data table found in AFRICA sheet")
-                        continue
-                    df_africa = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
-                    df_africa.columns = df_africa.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
-                    # Print raw column names for debugging
-                    print(f"AFRICA columns: {list(df_africa.columns)}")
-                    # Map columns
-                    col_map = {}
-                    for col in df_africa.columns:
-                        col_lower = col.lower().strip()
-                        if any(k in col_lower for k in ['port', 'dest', 'destination']):
-                            col_map[col] = 'PORT'
-                        elif any(k in col_lower for k in ["20'", '20d', '20dc', '20 dc', '20 ', "20'd"]):
-                            col_map[col] = '20'
-                        elif any(k in col_lower for k in ['40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"]):
-                            col_map[col] = '40HC'
-                        elif any(k in col_lower for k in ["40'", '40d', '40std', '40 std', '40 ', "40'd"]):
-                            col_map[col] = '40STD'
-                        elif any(k in col_lower for k in ['remark', 'rate structure', 'surcharges group']):
-                            col_map[col] = 'REMARKS'
-                    # Validate required columns
-                    required_cols = ['PORT', '20', '40STD', '40HC']
-                    if not all(k in col_map.values() for k in required_cols):
-                        print(f"Missing required columns in AFRICA: {required_cols}, Mapped: {col_map}")
-                        continue
-                    parsed_africa = df_africa[list(col_map.keys())].rename(columns=col_map)
-                    if 'PORT' not in parsed_africa.columns:
-                        print("PORT column missing in AFRICA after mapping")
-                        continue
-                    parsed_africa = parsed_africa[parsed_africa['PORT'].notna()]
-                    if parsed_africa.empty:
-                        print("No valid PORT data in AFRICA after notna filter")
-                        continue
-                    parsed_africa = parsed_africa[parsed_africa['PORT'].astype(str).str.strip() != '']
-                    if parsed_africa.empty:
-                        print("No valid PORT data in AFRICA after strip filter")
-                        continue
-                    parsed_africa = parsed_africa[parsed_africa['PORT'].astype(str).str.lower() != 'port']
-                    if parsed_africa.empty:
-                        print("No valid data in AFRICA after port filter")
-                        continue
-                    parsed_africa['PORT'] = parsed_africa['PORT'].astype(str).str.strip()
-                    for col in ['20', '40STD', '40HC']:
-                        if col in parsed_africa.columns:
-                            parsed_africa[col] = clean_numeric(parsed_africa[col])
-                        else:
-                            parsed_africa[col] = pd.NA
-                    if 'REMARKS' in parsed_africa.columns:
-                        parsed_africa['REMARKS'] = parsed_africa['REMARKS'].astype(str).str.strip().replace('nan', '')
-                    parsed_africa.insert(0, 'POL', 'Nhava Sheva')
-                    parsed_africa['POL'] = parsed_africa['POL'].apply(standardize_pol)
-                    parsed_africa['Sheet'] = sheet_name
-                    print(f"AFRICA parsed successfully: {parsed_africa.shape}")
-                    data.append(parsed_africa)
-                    info.extend(remarks)
-                except Exception as e:
-                    print(f"Error parsing AFRICA sheet: {str(e)}")
-                    info.append(f"Error parsing AFRICA sheet: {str(e)}")
+                col_map = {
+                    ('port', 'dest', 'destination'): 'PORT',
+                    ("20'", '20d', '20dc', '20 dc', '20 ', "20'd"): '20',
+                    ('40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"): '40HC',
+                    ("40'", '40d', '40std', '40 std', '40 ', "40'd"): '40STD',
+                    ('remark', 'rate structure', 'surcharges group'): 'REMARKS',
+                    ('t/t',): 'TRANSIT TIME'
+                }
+                keywords = ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION']
+                required_cols = ['PORT', '20', '40STD', '40HC']
+                dfs, _ = parse_table(pd.read_excel(file, sheet_name=sheet_name, header=None), sheet_name, keywords, col_map, required_cols)
+                data.extend(dfs)
 
             # === LATAM ===
             elif "latam" in sheet_name_lower:
-                try:
-                    df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
-                    remarks = []
-                    data_start_row = None
-                    for idx, row in df_raw.iterrows():
-                        row_str = ' '.join(row.dropna().astype(str).str.strip())
-                        if sum(k in row_str.upper() for k in ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION', 'PORTS']) >= 2:
-                            if idx + 1 < len(df_raw):
-                                next_row = df_raw.iloc[idx + 1].dropna().astype(str).str.strip()
-                                if any(next_row.str.isnumeric()) or any(next_row.str.contains(r'^[A-Za-z\s]+$', regex=True)):
-                                    data_start_row = idx
-                                    break
-                        for cell in row:
-                            if pd.notna(cell) and str(cell).strip():
-                                remarks.append(str(cell).strip())
-                    if data_start_row is None:
-                        print(f"No data table found in LATAM sheet")
-                        continue
-                    df_latam = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
-                    df_latam.columns = df_latam.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
-                    # Print raw column names for debugging
-                    print(f"LATAM columns: {list(df_latam.columns)}")
-                    # Map columns
-                    col_map = {}
-                    for col in df_latam.columns:
-                        col_lower = col.lower().strip()
-                        if any(k in col_lower for k in ['port', 'dest', 'destination', 'ports']):
-                            col_map[col] = 'PORT'
-                        elif any(k in col_lower for k in ["20'", '20d', '20dc', '20 dc', '20 ', "20'd"]):
-                            col_map[col] = '20'
-                        elif any(k in col_lower for k in ['40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"]):
-                            col_map[col] = '40HC'
-                        elif any(k in col_lower for k in ["40'", '40d', '40std', '40 std', '40 ', "40'd"]):
-                            col_map[col] = '40STD'
-                        elif any(k in col_lower for k in ['remark', 'rate structure', 'surcharges group']):
-                            col_map[col] = 'REMARKS'
-                    # Validate required columns
-                    required_cols = ['PORT', '20', '40STD', '40HC']
-                    if not all(k in col_map.values() for k in required_cols):
-                        print(f"Missing required columns in LATAM: {required_cols}, Mapped: {col_map}")
-                        continue
-                    parsed_latam = df_latam[list(col_map.keys())].rename(columns=col_map)
-                    if 'PORT' not in parsed_latam.columns:
-                        print("PORT column missing in LATAM after mapping")
-                        continue
-                    parsed_latam = parsed_latam[parsed_latam['PORT'].notna()]
-                    if parsed_latam.empty:
-                        print("No valid PORT data in LATAM after notna filter")
-                        continue
-                    parsed_latam = parsed_latam[parsed_latam['PORT'].astype(str).str.strip() != '']
-                    if parsed_latam.empty:
-                        print("No valid PORT data in LATAM after strip filter")
-                        continue
-                    parsed_latam = parsed_latam[parsed_latam['PORT'].astype(str).str.lower() != 'port']
-                    if parsed_latam.empty:
-                        print("No valid data in LATAM after port filter")
-                        continue
-                    parsed_latam['PORT'] = parsed_latam['PORT'].astype(str).str.strip()
-                    for col in ['20', '40STD', '40HC']:
-                        if col in parsed_latam.columns:
-                            parsed_latam[col] = clean_numeric(parsed_latam[col])
-                        else:
-                            parsed_latam[col] = pd.NA
-                    if 'REMARKS' in parsed_latam.columns:
-                        parsed_latam['REMARKS'] = parsed_latam['REMARKS'].astype(str).str.strip().replace('nan', '')
-                    parsed_latam.insert(0, 'POL', 'Nhava Sheva')
-                    parsed_latam['POL'] = parsed_latam['POL'].apply(standardize_pol)
-                    parsed_latam['Sheet'] = sheet_name
-                    print(f"LATAM parsed successfully: {parsed_latam.shape}")
-                    data.append(parsed_latam)
-                    info.extend(remarks)
-                except Exception as e:
-                    print(f"Error parsing LATAM sheet: {str(e)}")
-                    info.append(f"Error parsing LATAM sheet: {str(e)}")
+                col_map = {
+                    ('port', 'dest', 'destination', 'ports'): 'PORT',
+                    ("20'", '20d', '20dc', '20 dc', '20 ', "20'd"): '20',
+                    ('40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"): '40HC',
+                    ("40'", '40d', '40std', '40 std', '40 ', "40'd"): '40STD',
+                    ('remark', 'rate structure', 'surcharges group'): 'REMARKS',
+                    ('t/t',): 'TRANSIT TIME'
+                }
+                keywords = ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION', 'PORTS']
+                required_cols = ['PORT', '20', '40STD', '40HC']
+                dfs, _ = parse_table(pd.read_excel(file, sheet_name=sheet_name, header=None), sheet_name, keywords, col_map, required_cols, is_latam=True)
+                data.extend(dfs)
 
             # === LUX Service for LAEC ===
             elif "lux" in sheet_name_lower and "laec" in sheet_name_lower:
-                try:
-                    df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
-                    remarks = []
-                    data_start_row = None
-                    for idx, row in df_raw.iterrows():
-                        row_str = ' '.join(row.dropna().astype(str).str.strip())
-                        if sum(k in row_str.upper() for k in ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION', 'PORTS']) >= 2:
-                            if idx + 1 < len(df_raw):
-                                next_row = df_raw.iloc[idx + 1].dropna().astype(str).str.strip()
-                                if any(next_row.str.isnumeric()) or any(next_row.str.contains(r'^[A-Za-z\s]+$', regex=True)):
-                                    data_start_row = idx
-                                    break
-                        for cell in row:
-                            if pd.notna(cell) and str(cell).strip():
-                                remarks.append(str(cell).strip())
-                    if data_start_row is None:
-                        print(f"No data table found in LUX Service for LAEC sheet")
-                        continue
-                    df_lux = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row)
-                    df_lux.columns = df_lux.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
-                    # Print raw column names for debugging
-                    print(f"LUX Service for LAEC columns: {list(df_lux.columns)}")
-                    # Map columns
-                    col_map = {}
-                    for col in df_lux.columns:
-                        col_lower = col.lower().strip()
-                        if any(k in col_lower for k in ['port', 'dest', 'destination', 'ports']):
-                            col_map[col] = 'PORT'
-                        elif any(k in col_lower for k in ["20'", '20d', '20dc', '20 dc', '20 ', "20'd"]):
-                            col_map[col] = '20'
-                        elif any(k in col_lower for k in ['40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"]):
-                            col_map[col] = '40HC'
-                        elif any(k in col_lower for k in ["40'", '40d', '40std', '40 std', '40 ', "40'd"]):
-                            col_map[col] = '40STD'
-                        elif any(k in col_lower for k in ['remark', 'rate structure', 'surcharges group']):
-                            col_map[col] = 'REMARKS'
-                    # Validate required columns
-                    required_cols = ['PORT', '20', '40STD', '40HC']
-                    if not all(k in col_map.values() for k in required_cols):
-                        print(f"Missing required columns in LUX Service for LAEC: {required_cols}, Mapped: {col_map}")
-                        continue
-                    parsed_lux = df_lux[list(col_map.keys())].rename(columns=col_map)
-                    if 'PORT' not in parsed_lux.columns:
-                        print("PORT column missing in LUX Service for LAEC after mapping")
-                        continue
-                    parsed_lux = parsed_lux[parsed_lux['PORT'].notna()]
-                    if parsed_lux.empty:
-                        print("No valid PORT data in LUX Service for LAEC after notna filter")
-                        continue
-                    parsed_lux = parsed_lux[parsed_lux['PORT'].astype(str).str.strip() != '']
-                    if parsed_lux.empty:
-                        print("No valid PORT data in LUX Service for LAEC after strip filter")
-                        continue
-                    parsed_lux = parsed_lux[parsed_lux['PORT'].astype(str).str.lower() != 'port']
-                    if parsed_lux.empty:
-                        print("No valid data in LUX Service for LAEC after port filter")
-                        continue
-                    parsed_lux['PORT'] = parsed_lux['PORT'].astype(str).str.strip()
-                    for col in ['20', '40STD', '40HC']:
-                        if col in parsed_lux.columns:
-                            parsed_lux[col] = clean_numeric(parsed_lux[col])
-                        else:
-                            parsed_lux[col] = pd.NA
-                    if 'REMARKS' in parsed_lux.columns:
-                        parsed_lux['REMARKS'] = parsed_lux['REMARKS'].astype(str).str.strip().replace('nan', '')
-                    parsed_lux.insert(0, 'POL', 'Nhava Sheva')
-                    parsed_lux['POL'] = parsed_lux['POL'].apply(standardize_pol)
-                    parsed_lux['Sheet'] = sheet_name
-                    print(f"LUX Service for LAEC parsed successfully: {parsed_lux.shape}")
-                    data.append(parsed_lux)
-                    info.extend(remarks)
-                except Exception as e:
-                    print(f"Error parsing LUX Service for LAEC sheet: {str(e)}")
-                    info.append(f"Error parsing LUX Service for LAEC sheet: {str(e)}")
+                col_map = {
+                    ('port', 'dest', 'destination', 'ports'): 'PORT',
+                    ("20'", '20d', '20dc', '20 dc', '20 ', "20'd"): '20',
+                    ('40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"): '40HC',
+                    ("40'", '40d', '40std', '40 std', '40 ', "40'd"): '40STD',
+                    ('remark', 'rate structure', 'surcharges group'): 'REMARKS'
+                }
+                keywords = ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION', 'PORTS']
+                required_cols = ['PORT', '20', '40STD', '40HC']
+                dfs, _ = parse_table(pd.read_excel(file, sheet_name=sheet_name, header=None), sheet_name, keywords, col_map, required_cols, is_latam=True)
+                data.extend(dfs)
 
-        # Combine all data
-        final_df = pd.concat([df for df in data if not df.empty], ignore_index=True) if data else pd.DataFrame()
-        info = list(dict.fromkeys([line for line in info if len(line.split()) > 2]))  # Remove duplicates and short lines
+        # Combine all data and remove duplicates
+        if data:
+            all_columns = set()
+            for df in data:
+                all_columns.update(df.columns)
+            all_columns = sorted(list(all_columns))
+            
+            aligned_dfs = []
+            for df in data:
+                missing_cols = [col for col in all_columns if col not in df.columns]
+                for col in missing_cols:
+                    df[col] = np.nan
+                aligned_dfs.append(df[all_columns])
+            
+            final_df = pd.concat(aligned_dfs, ignore_index=True)
+            final_df = final_df.drop_duplicates(subset=['POL', 'PORT', '20', '40STD', '40HC', 'Sheet'], keep='first')
+
+            # Define the desired column order with TRANSIT TIME and ROUTING
+            desired_column_order = [
+                'POL', 'PORT', '20', '40STD', '40HC', 'POD COUNTRY',
+                'EXPIRY DATE', 'TRANSIT TIME', 'ROUTING', 'REMARKS', 'Sheet'
+            ]
+
+            # Reorder columns according to desired_column_order
+            final_columns = [col for col in desired_column_order if col in final_df.columns]
+            remaining_columns = [col for col in final_df.columns if col not in desired_column_order]
+            final_columns.extend(remaining_columns)
+            final_df = final_df[final_columns]
+        else:
+            final_df = pd.DataFrame()
+
+        # Remove duplicates in info and filter short lines (but keep sheet names and blank lines)
+        info = list(dict.fromkeys([line for line in info if len(line.split()) > 2 or line.startswith("* Sheet :") or line == ""]))
         return final_df, info
 
     except Exception as e:
         print(f"Error in parse_one: {str(e)}")
-        return pd.DataFrame(), [f"Error in parse_one: {str(e)}"]
+        # Ensure the error is added to info with a sheet context if possible
+        if sheets and info and not info[-1].startswith("* Sheet :"):
+            info.append(f"* Sheet : {sheets[-1]}")
+        info.append(f"Error in parse_one: {str(e)}")
+        return pd.DataFrame(), info
+
+
 
 def parse_msc(file, month_year):
     try:
@@ -899,13 +759,15 @@ def parse_msc(file, month_year):
                 if 'EUR' in value.upper():
                     match = re.search(r'(\d+[.,]?\d*)', value)
                     if match:
-                        return f"{float(match.group(1).replace(',', ''))} €"
+                        num = float(match.group(1).replace(',', ''))
+                        return f"{int(num)} €"
                 else:
                     match = re.search(r'(\d+[.,]?\d*)', value)
                     if match:
-                        return f"{float(match.group(1).replace(',', ''))} $"
+                        num = float(match.group(1).replace(',', ''))
+                        return f"{int(num)} $"
             elif isinstance(value, (int, float)):
-                return f"{float(value)} $"
+                return f"{int(value)} $"
             return np.nan
 
         parsed['20'] = parsed['20'].apply(extract_value_with_currency)
@@ -971,8 +833,13 @@ def parse_pil(file, month_year):
             if col in df_pil.columns:
                 parsed_pil[pil_map[col]] = df_pil[col].astype(str).str.strip().replace('nan', '')
 
-        parsed_pil['20'] = clean_numeric(parsed_pil['20'])
-        parsed_pil['40STD'] = clean_numeric(parsed_pil['40STD'])
+        # Clean numeric columns and remove decimal points
+        parsed_pil['20'] = clean_numeric(parsed_pil['20']).apply(
+            lambda x: str(int(x)) if pd.notna(x) and x != 0 else np.nan
+        )
+        parsed_pil['40STD'] = clean_numeric(parsed_pil['40STD']).apply(
+            lambda x: str(int(x)) if pd.notna(x) and x != 0 else np.nan
+        )
 
         if '40HC' in parsed_pil.columns:
             parsed_pil = parsed_pil.drop(columns=['40HC'])
@@ -988,8 +855,8 @@ def parse_pil(file, month_year):
         parsed_pil = parsed_pil.dropna(subset=['PORT', 'POL'])
         parsed_pil = parsed_pil[(parsed_pil['PORT'].str.strip() != '') & (parsed_pil['POL'].str.strip() != '')]
 
-        parsed_pil = parsed_pil[~((parsed_pil['20'].isna() | (parsed_pil['20'] == 0)) & 
-                                  (parsed_pil['40STD'].isna() | (parsed_pil['40STD'] == 0)))]
+        parsed_pil = parsed_pil[~((parsed_pil['20'].isna() | (parsed_pil['20'] == 'nan')) & 
+                                  (parsed_pil['40STD'].isna() | (parsed_pil['40STD'] == 'nan')))]
 
         return parsed_pil, info
     except Exception as e:
@@ -1025,8 +892,13 @@ def parse_arkas(file, month_year):
         base_cols = [col for col in required_cols if col in df_arkas.columns]
         parsed_arkas = df_arkas[base_cols].rename(columns={col: arkas_map[col] for col in base_cols})
 
-        parsed_arkas['20'] = clean_numeric(parsed_arkas['20'])
-        parsed_arkas['40STD'] = clean_numeric(parsed_arkas['40STD'])
+        # Clean numeric columns and remove decimal points by converting to integers
+        parsed_arkas['20'] = clean_numeric(parsed_arkas['20']).apply(
+            lambda x: str(int(x)) if pd.notna(x) and x != 0 else np.nan
+        )
+        parsed_arkas['40STD'] = clean_numeric(parsed_arkas['40STD']).apply(
+            lambda x: str(int(x)) if pd.notna(x) and x != 0 else np.nan
+        )
         parsed_arkas['40HC'] = np.nan
 
         parsed_arkas['PORT'] = parsed_arkas['PORT'].astype(str).str.strip().replace('nan', '')
@@ -1040,8 +912,8 @@ def parse_arkas(file, month_year):
         parsed_arkas = parsed_arkas.dropna(subset=['PORT'])
         parsed_arkas = parsed_arkas[parsed_arkas['PORT'].str.strip() != '']
 
-        parsed_arkas = parsed_arkas[~((parsed_arkas['20'].isna() | (parsed_arkas['20'] == 0)) &
-                                      (parsed_arkas['40STD'].isna() | (parsed_arkas['40STD'] == 0)))]
+        parsed_arkas = parsed_arkas[~((parsed_arkas['20'].isna() | (parsed_arkas['20'] == '0')) &
+                                      (parsed_arkas['40STD'].isna() | (parsed_arkas['40STD'] == '0')))]
 
         parsed_arkas = parsed_arkas.dropna(subset=['POL', 'PORT'])
         parsed_arkas = parsed_arkas[(parsed_arkas['POL'].str.strip() != '') & (parsed_arkas['PORT'].str.strip() != '')]
@@ -1472,8 +1344,11 @@ def parse_cosco_fareast(file, month_year):
             df['REMARKS'] = df['REMARKS'].astype(str).str.strip()
             df['REMARKS'] = df['REMARKS'].replace('', np.nan)
 
+            # Convert numeric values to integers (removing decimal points) and store as strings
             for col in ['20', '40STD', '40HC']:
-                df[col] = df[col].apply(lambda x: f"{x:.2f}" if isinstance(x, float) else x)
+                df[col] = df[col].apply(
+                    lambda x: str(int(x)) if isinstance(x, float) and pd.notna(x) and x != 0 else x
+                )
 
             df['POL_ORDER'] = df['POL'].map({'Nhava Sheva': 1, 'Mundra': 2, 'Pipavav': 3})
             df = df.sort_values(by=['POL_ORDER', 'PORT']).drop(columns=['POL_ORDER'])
@@ -1485,7 +1360,6 @@ def parse_cosco_fareast(file, month_year):
     except Exception as e:
         return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS']), [f"Error parsing Cosco-Fareast file: {str(e)}"]
 
-     
 
 from openpyxl import load_workbook
 import traceback
@@ -2403,9 +2277,92 @@ def parse_zim(file, month_year):
         print(f"Full traceback: {traceback.format_exc()}")
         return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), [f"Error parsing ZIM MRG file: {str(e)}"]
     
+def parse_custom_vendor(file, month_year, selected_columns):
+    try:
+        # Read Excel file (first sheet, assume headers)
+        df_raw = pd.read_excel(file, sheet_name=0, header=0)
+        df_raw.columns = df_raw.columns.astype(str).str.strip()
+
+        # Validate required columns
+        if 'POL' not in selected_columns or 'PORT' not in selected_columns:
+            return pd.DataFrame(), ["Error: 'POL' and 'PORT' columns are required."]
+
+        # Map Excel columns to selected columns (case-insensitive, partial match)
+        col_map = {}
+        for sel_col in selected_columns:
+            for raw_col in df_raw.columns:
+                if sel_col.lower() in raw_col.lower():
+                    col_map[raw_col] = sel_col
+                    break
+
+        # Create DataFrame with mapped columns
+        df = pd.DataFrame()
+        if col_map:
+            df = df_raw[list(col_map.keys())].rename(columns=col_map)
+        else:
+            df = df_raw.copy()
+
+        # Ensure all selected columns exist
+        for col in selected_columns:
+            if col not in df.columns:
+                df[col] = np.nan
+
+        # Reorder columns
+        df = df[selected_columns]
+
+        # Clean and standardize data with currency formatting
+        numeric_cols = ['20', '40STD', '40HC']
+        for col in numeric_cols:
+            if col in df.columns:
+                def format_currency(value):
+                    if pd.isna(value):
+                        return value
+                    value_str = str(value).strip().upper()
+                    numeric_value = clean_numeric(pd.Series([value]))[0]
+                    if pd.isna(numeric_value):
+                        return None
+                    if 'EUR' in value_str or '€' in value_str:
+                        return f"€{int(numeric_value)}"  # Convert to integer
+                    else:
+                        return f"${int(numeric_value)}"  # Convert to integer
+                df[col] = df[col].apply(format_currency)
+
+        text_cols = ['POL', 'PORT', 'REMARKS', 'ROUTING', 'TRANSIT TIME', 'SERVICE', 'VALIDITY']
+        for col in text_cols:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.strip().replace('nan', '')
+                if col == 'POL':
+                    df['POL'] = df['POL'].apply(standardize_pol)
+
+        if 'EXPIRY DATE' in df.columns:
+            df['EXPIRY DATE'] = pd.to_datetime(df['EXPIRY DATE'], errors='coerce').dt.strftime('%Y-%m-%d')
+
+        # Filter out invalid rows
+        df = df[df['PORT'].notna() & (df['PORT'].str.strip() != '')]
+        df = df[df['POL'].notna() & (df['POL'].str.strip() != '')]
+
+        # Extract remarks from non-data sections
+        remarks = []
+        try:
+            df_header = pd.read_excel(file, sheet_name=0, header=None)
+            for idx, row in df_header.iterrows():
+                for cell in row:
+                    if pd.notna(cell) and str(cell).strip():
+                        cell_text = str(cell).strip()
+                        if len(cell_text.split()) > 2 and not any(cell_text.lower() in str(val).lower() for val in df['PORT']):
+                            remarks.append(cell_text)
+        except Exception as e:
+            remarks.append(f"Error extracting remarks: {str(e)}")
+
+        return df, remarks
+    except Exception as e:
+        print(f"Error parsing custom vendor file: {str(e)}")
+        return pd.DataFrame(), [f"Error parsing custom vendor file: {str(e)}"]
+    
 # === FIREBASE DATA FUNCTIONS ===
 @st.cache_data
 def load_from_firestore():
+    # Original hardcoded vendors
     data = {
         "MSC": {}, "Wan Hai": {}, "Emirates": {}, "ONE MRG": {}, "HMM MRG": {},
         "OOCL": {}, "PIL MRG": {}, "ARKAS MRG": {}, "Interasia": {}, "Cosco-Gulf": {}, 
@@ -2414,6 +2371,8 @@ def load_from_firestore():
     all_pods = set()
     all_pols = set()
     vendors_ref = db.collection('vendors')
+    
+    # Process hardcoded vendors as before
     for vendor in data.keys():
         docs = vendors_ref.document(vendor).collection('data').stream()
         for doc in docs:
@@ -2426,6 +2385,30 @@ def load_from_firestore():
             if 'POL' in df_temp.columns:
                 df_temp['POL'] = df_temp['POL'].apply(standardize_pol)  # Standardize POL names
                 all_pols.update(df_temp['POL'].dropna().astype(str).str.strip().unique())
+    
+    # Fetch custom vendors and process their most recent month-year document (without order_by)
+    custom_vendors_ref = db.collection('custom_vendors')
+    for doc in custom_vendors_ref.stream():
+        vendor = doc.id
+        if vendor not in data:  # Avoid overwriting hardcoded vendors
+            data[vendor] = {}
+            # Fetch all documents and manually find the most recent
+            docs = vendors_ref.document(vendor).collection('data').stream()
+            month_years = [(doc.id, doc.to_dict()) for doc in docs]
+            if month_years:
+                # Sort by month-year ID (e.g., "2025-MAY") in descending order
+                most_recent = sorted(month_years, key=lambda x: x[0], reverse=True)[0]
+                month_year, doc_data = most_recent
+                data[vendor][month_year] = doc_data
+                df_temp = pd.DataFrame(doc_data.get("data", []))
+                if 'PORT' in df_temp.columns:
+                    all_pods.update(df_temp['PORT'].dropna().astype(str).str.strip().unique())
+                if 'POD' in df_temp.columns:
+                    all_pods.update(df_temp['POD'].dropna().astype(str).str.strip().unique())
+                if 'POL' in df_temp.columns:
+                    df_temp['POL'] = df_temp['POL'].apply(standardize_pol)
+                    all_pols.update(df_temp['POL'].dropna().astype(str).str.strip().unique())
+    
     return data, sorted(list(all_pods)), sorted(list(all_pols))
 
 def save_to_firestore(vendor, month_year, df, info):
@@ -2438,19 +2421,52 @@ def save_to_firestore(vendor, month_year, df, info):
     batch.set(doc_ref, data_dict, merge=True)
     batch.commit()
 
-def query_firestore(pol, pod, equipment):
-    # Dynamically get the current month-year in the format "YYYY-MMM"
-    current_date = datetime.now()  # Current date is May 09, 2025
-    current_month_year = f"{current_date.year}-{current_date.strftime('%b').upper()}"  # Format as "2025-MAY"
+def save_custom_vendor_metadata(vendor_name, selected_columns):
+    doc_ref = db.collection('custom_vendors').document(vendor_name)
+    doc_ref.set({
+        'name': vendor_name,
+        'columns': selected_columns,
+        'created_at': firestore.SERVER_TIMESTAMP
+    })
+
+def get_all_vendors():
+    # Hardcoded vendors from load_from_firestore
+    data, _, _ = load_from_firestore()
+    vendors = list(data.keys())
     
+    # Add custom vendors
+    custom_vendors_ref = db.collection('custom_vendors')
+    custom_docs = custom_vendors_ref.stream()
+    for doc in custom_docs:
+        vendor_name = doc.id
+        if vendor_name not in vendors:
+            vendors.append(vendor_name)
+    
+    return sorted(vendors)
+
+def query_firestore(pol, pod, equipment, month=None, year=None):
     results = []
-    vendors = ["MSC", "Wan Hai", "Emirates", "ONE MRG", "HMM MRG", "OOCL", "PIL MRG", "ARKAS MRG", "Interasia", "Cosco-Gulf", "Cosco-WCSA & CB", "Cosco-Africa", "Turkon", "Cosco-Fareast", "ZIM MRG"]
+    vendors = get_all_vendors()
+    
+    # Get current month and year from system date
+    current_date = datetime.now()
+    current_year = str(current_date.year)  # e.g., "2025"
+    current_month = current_date.strftime("%b").upper()  # e.g., "MAY"
+    
     for vendor in vendors:
         vendor_ref = db.collection('vendors').document(vendor).collection('data')
         docs = vendor_ref.stream()
         for doc in docs:
-            # Filter for current month-year only
-            if doc.id != current_month_year:
+            # doc.id is in the format "YYYY-MMM" (e.g., "2025-MAY")
+            doc_month_year = doc.id.split('-')
+            doc_year = doc_month_year[0]  # e.g., "2025"
+            doc_month = doc_month_year[1]  # e.g., "MAY"
+            
+            # Use current month and year if not specified
+            target_year = year if year else current_year
+            target_month = month if month else current_month
+            
+            if doc_year != target_year or doc_month != target_month:
                 continue
                 
             doc_data = doc.to_dict()
@@ -2462,47 +2478,51 @@ def query_firestore(pol, pod, equipment):
             if 'POL' in df.columns:
                 df['POL'] = df['POL'].apply(standardize_pol)
 
+            # Clean PORT/POD columns
+            if 'PORT' in df.columns:
+                df['PORT'] = df['PORT'].astype(str).str.strip()
+                df['PORT'] = df['PORT'].replace(['nan', 'None', ''], pd.NA)
+            if 'POD' in df.columns:
+                df['POD'] = df['POD'].astype(str).str.strip()
+                df['POD'] = df['POD'].replace(['nan', 'None', ''], pd.NA)
+
             # Apply POL filter with exact match
             if 'POL' in df.columns and pol:
-                df = df[df['POL'].str.lower() == pol.lower()]  # Exact match for POL
+                df = df[df['POL'].str.lower() == pol.lower()]
 
-            # Apply POD filter with exact match
+            # Apply POD filter with partial match
             if 'PORT' in df.columns and pod:
-                df = df[df['PORT'].str.lower() == pod.lower()]  # Exact match for PORT
-                # Ensure PORT is not empty or "None"
+                df = df[df['PORT'].str.contains(pod, case=False, na=False)]
                 df = df[df['PORT'].ne('') & df['PORT'].ne('None')]
-            elif 'POD' in df.columns and pod:  # Handle HMM MRG case
-                df = df[df['POD'].str.lower() == pod.lower()]  # Exact match for POD
+            elif 'POD' in df.columns and pod:
+                df = df[df['POD'].str.contains(pod, case=False, na=False)]
                 df = df[df['POD'].ne('') & df['POD'].ne('None')]
                 if not df.empty:
-                    df = df.rename(columns={'POD': 'PORT'})  # Rename POD to PORT for display
+                    df = df.rename(columns={'POD': 'PORT'})
 
-            # Apply equipment filter and ensure non-"None" values
+            # Apply equipment filter
             if equipment and any(eq in df.columns for eq in equipment):
-                # Check for non-NaN and non-"None" values in equipment columns
                 conditions = []
                 for eq in equipment:
                     if eq in df.columns:
-                        # Exclude rows where the equipment value is NaN, empty, or "None"
+                        df[eq] = df[eq].astype(str).replace(['nan', 'None', ''], pd.NA)
                         condition = df[eq].notna() & (df[eq] != '') & (df[eq] != 'None')
                         conditions.append(condition)
                 if conditions:
-                    # Require at least one equipment column to have a valid value
                     df = df[pd.concat([pd.Series(c) for c in conditions], axis=1).any(axis=1)]
 
-            # Additional check: Ensure all selected equipment columns have valid data (not "None")
+            # Additional equipment check
             if equipment:
                 for eq in equipment:
                     if eq in df.columns:
                         df = df[df[eq].ne('None')]
 
-            # Only append if DataFrame has valid data after filtering
+            # Append results if DataFrame has valid data
             if not df.empty:
-                # Ensure PORT and equipment columns are not "None"
                 if 'PORT' in df.columns:
                     df = df[df['PORT'].ne('None')]
                 if df.empty:
-                    continue  # Skip if PORT filter removes all rows
+                    continue
 
                 df['Month-Year'] = doc.id
                 df['Vendor'] = vendor
@@ -2512,6 +2532,16 @@ def query_firestore(pol, pod, equipment):
 
 def delete_from_firestore(vendor, month_year):
     db.collection('vendors').document(vendor).collection('data').document(month_year).delete()
+
+def get_all_month_years():
+    """Fetch all available Month-Year values from Firestore."""
+    month_years = set()
+    vendors_ref = db.collection('vendors')
+    for vendor_doc in vendors_ref.stream():
+        docs = vendors_ref.document(vendor_doc.id).collection('data').stream()
+        for doc in docs:
+            month_years.add(doc.id)
+    return sorted(list(month_years), reverse=True)
 
 # === STREAMLIT APP ===
 st.set_page_config(page_title="Vendor Data Parser", layout="wide")
@@ -2557,131 +2587,295 @@ if 'pod_suggestions' not in st.session_state or 'pol_suggestions' not in st.sess
 if 'search_results' not in st.session_state:
     st.session_state.search_results = pd.DataFrame()
 
+def delete_vendor_from_firestore(vendor):
+    try:
+        # Delete from vendors collection
+        vendor_ref = db.collection('vendors').document(vendor)
+        data_ref = vendor_ref.collection('data').stream()
+        batch = db.batch()
+        for doc in data_ref:
+            batch.delete(doc.reference)
+        batch.delete(vendor_ref)
+        batch.commit()
+
+        # Delete from custom_vendors collection (if exists)
+        custom_vendor_ref = db.collection('custom_vendors').document(vendor)
+        if custom_vendor_ref.get().exists:
+            custom_vendor_ref.delete()
+
+        # Clear cache and update suggestions
+        st.cache_data.clear()
+        data, pod_suggestions, pol_suggestions_from_db = load_from_firestore()
+        st.session_state.pod_suggestions = sorted(pod_suggestions)
+        mandatory_pols = {"Nhava Sheva", "Rajula", "Pipavav"}
+        st.session_state.pol_suggestions = sorted(list(set(pol_suggestions_from_db) | mandatory_pols))
+        st.success(f"Vendor '{vendor}' deleted successfully.")
+    except Exception as e:
+        st.error(f"Error deleting vendor '{vendor}': {str(e)}")
+
 def main_page():
-    # === Title ===
     st.title("Vendor Data Parser")
 
-    # === Upload Vendor Data Section ===
-    st.subheader("Upload Vendor Data")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        month = st.selectbox("Month", ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])
-    with col2:
-        year = st.selectbox("Year", [2025, 2026, 2027, 2028, 2029, 2030], format_func=lambda x: str(x), help="Select the year for the data.")
-    with col3:
-        # Sort vendors alphabetically
-        vendors = sorted(["MSC", "Wan Hai", "Emirates", "ONE MRG", "HMM MRG", "OOCL", "PIL MRG", "ARKAS MRG", "Interasia", "Cosco-Gulf", "Cosco-WCSA & CB", "Cosco-Africa", "Turkon", "Cosco-Fareast", "ZIM MRG"])
-        vendor = st.selectbox("Vendor", vendors)
-    month_year = f"{year}-{month[:3].upper()}"
-
-    # Use a key for the file uploader to control its state
-    if 'file_uploader_key' not in st.session_state:
-        st.session_state.file_uploader_key = 0
-    uploaded_file = st.file_uploader("Upload Excel or PDF", type=['xlsx', 'pdf'], key=f"uploader_{st.session_state.file_uploader_key}") 
-
-    if uploaded_file and st.button("Parse and Store"):
-        parser_map = {
-            "MSC": parse_msc,
-            "Wan Hai": parse_wan_hai,
-            "Emirates": parse_emirates,
-            "ONE MRG": parse_one,
-            "HMM MRG": parse_hmm,
-            "OOCL": parse_oocl,
-            "PIL MRG": parse_pil,
-            "ARKAS MRG": parse_arkas,
-            "Interasia": parse_interasia,
-            "Cosco-Gulf": parse_cosco_gulf,
-            "Cosco-WCSA & CB": parse_cosco_wcsa_cb,
-            "Cosco-Africa": parse_cosco_africa,
-            "Turkon": parse_turkon,
-            "Cosco-Fareast": parse_cosco_fareast,
-            "ZIM MRG": parse_zim
-        }
-        try:
-            df, info = parser_map[vendor](uploaded_file, month_year)
-            if not df.empty:
-                save_to_firestore(vendor, month_year, df, info)
-                st.cache_data.clear()
-                data, pod_suggestions, pol_suggestions_from_db = load_from_firestore()
-                st.session_state.pod_suggestions = sorted(pod_suggestions)
-                mandatory_pols = {"Nhava Sheva", "Rajula", "Pipavav"}
-                st.session_state.pol_suggestions = sorted(list(set(pol_suggestions_from_db) | mandatory_pols))
-                st.success(f"Data for {vendor} ({month_year}) parsed and stored successfully! Overwritten if previously existed.")
-                # Clear the file uploader by incrementing the key and rerunning
-                st.session_state.file_uploader_key += 1
-                st.rerun()
-            else:
-                st.warning(f"No data extracted for {vendor} ({month_year}). Check file format.")
-        except Exception as e:
-            st.error(f"Error parsing file: {str(e)}")
-            # Optionally clear on error as well
-            st.session_state.file_uploader_key += 1
+    # Sidebar Navigation with Clickable Buttons
+    st.sidebar.title("Navigation")
+    
+    # Initialize selected_section in session state if not present
+    if 'selected_section' not in st.session_state:
+        st.session_state.selected_section = "Upload Vendor Data"
+    
+    sections = ["Upload Vendor Data", "Vendors", "Add New Vendor", "Remove Vendor", "Search Vendor Data"]
+    
+    # Create clickable buttons for each section
+    for section in sections:
+        if st.sidebar.button(section, key=f"nav_{section}", use_container_width=True):
+            st.session_state.selected_section = section
             st.rerun()
+    
+    # Style the buttons to look like clickable text links
+    st.sidebar.markdown("""
+        <style>
+        /* Style the sidebar buttons to look like clickable text */
+        div[data-testid="stSidebar"] button {
+            background: none;
+            border: none;
+            padding: 8px 0;
+            color: #4A4A4A;
+            font-size: 16px;
+            text-align: left;
+            width: 100%;
+            cursor: pointer;
+        }
+        /* Highlight the selected section */
+        div[data-testid="stSidebar"] button[kind="secondary"][aria-selected="true"] {
+            color: #FF4B4B;
+            font-weight: bold;
+        }
+        /* Add hover effect */
+        div[data-testid="stSidebar"] button:hover {
+            color: #FF4B4B;
+            background: none;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    # Use the selected section from session state
+    selected_section = st.session_state.selected_section
 
-    # === Vendors Section ===
-    st.subheader("Vendors")
-    vendors = ["MSC", "Wan Hai", "Emirates", "ONE MRG", "HMM MRG", "OOCL", "PIL MRG", "ARKAS MRG", "Interasia", "Cosco-Gulf", "Cosco-WCSA & CB", "Cosco-Africa", "Turkon", "Cosco-Fareast", "ZIM MRG"]
-    data, _, _ = load_from_firestore()
-    num_columns = 5
-    num_rows = (len(vendors) + num_columns - 1) // num_columns  # Ceiling division for number of rows
-
-    for row_idx in range(num_rows):
-        cols = st.columns(num_columns)
-        for col_idx in range(num_columns):
-            vendor_idx = row_idx * num_columns + col_idx
-            if vendor_idx < len(vendors):
-                with cols[col_idx]:
-                    vendor = vendors[vendor_idx]
-                    record_count = len(data.get(vendor, {}))
-                    button_text = f"{vendor} ({record_count} records)"
-                    if st.button(button_text, key=f"vendor_{vendor}", help=f"View {vendor} data", use_container_width=True):
-                        st.session_state.page = 'vendor'
-                        st.session_state.selected_vendor = vendor
-                        st.rerun()
-
-    # === Search Vendor Data Section ===
-    st.subheader("Search Vendor Data")
-    col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
-
-    with col1:
-        pol_input = st.selectbox("POL (Type to search)", [""] + st.session_state.pol_suggestions, format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
-    with col2:
-        pod_input = st.selectbox("POD/PORT (Type to search)", [""] + st.session_state.pod_suggestions, format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
-    with col3:
-        carrier_input = st.selectbox("Carrier (Type to search)", [""] + vendors, format_func=lambda x: "" if x == "" else x, help="Start typing to see vendor names")
-    with col4:
-        st.write("Equipment")
+    if selected_section == "Upload Vendor Data":
         with st.container():
-            cols_equip = st.columns(3)
-            equip_20 = cols_equip[0].checkbox("20")
-            equip_40std = cols_equip[1].checkbox("40STD")
-            equip_40hc = cols_equip[2].checkbox("40HC")
-        equipment = [e for e, c in [("20", equip_20), ("40STD", equip_40std), ("40HC", equip_40hc)] if c]
-    with col5:
-        if st.button("🔍 Search"):
-            if not (pol_input or carrier_input):
-                st.warning("Please select at least one of POL or Carrier.")
-            elif not (pod_input or equipment):
-                st.warning("Please enter a POD/PORT or select at least one equipment type.")
-            else:
-                results = query_firestore(pol_input, pod_input, equipment)
-                if carrier_input:
-                    results = results[results['Vendor'].str.lower() == carrier_input.lower()] if not results.empty else results
-                st.session_state.search_results = results
-                if st.session_state.search_results.empty:
-                    st.info("No matching records found.")
+            st.subheader("Upload Vendor Data")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                month = st.selectbox("Month", ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])
+            with col2:
+                year = st.selectbox("Year", [2025, 2026, 2027, 2028, 2029, 2030], format_func=lambda x: str(x))
+            with col3:
+                vendors = get_all_vendors()
+                vendor = st.selectbox("Vendor", vendors)
+            month_year = f"{year}-{month[:3].upper()}"
 
-    if not st.session_state.search_results.empty:
-        st.subheader("Search Results")
-        display_columns = ['Vendor', 'Month-Year', 'POL', 'PORT'] + [e for e in equipment if e in st.session_state.search_results.columns]
-        additional_cols = ['REMARKS', 'ROUTING', 'TRANSIT TIME', 'VALIDITY', 'SERVICE NAME', 'SERVICE', 'EXPIRY DATE', 'Sheet', 'IMO SC PER TEU', '20 Haz', '40 Haz', "40'HRF"]
-        display_columns.extend([c for c in additional_cols if c in st.session_state.search_results.columns])
-        # Ensure POL is displayed consistently and rename POD to PORT for HMM MRG
-        if 'POL' in st.session_state.search_results.columns:
-            st.session_state.search_results['POL'] = st.session_state.search_results['POL'].apply(standardize_pol)
-        if 'POD' in st.session_state.search_results.columns:
-            st.session_state.search_results = st.session_state.search_results.rename(columns={'POD': 'PORT'})
-        st.dataframe(st.session_state.search_results[display_columns])
+            if 'file_uploader_key' not in st.session_state:
+                st.session_state.file_uploader_key = 0
+            uploaded_file = st.file_uploader("Upload Excel or PDF", type=['xlsx', 'pdf'], key=f"uploader_{st.session_state.file_uploader_key}")
+
+            if uploaded_file and st.button("Parse and Store"):
+                parser_map = {
+                    "MSC": parse_msc,
+                    "Wan Hai": parse_wan_hai,
+                    "Emirates": parse_emirates,
+                    "ONE MRG": parse_one,
+                    "HMM MRG": parse_hmm,
+                    "OOCL": parse_oocl,
+                    "PIL MRG": parse_pil,
+                    "ARKAS MRG": parse_arkas,
+                    "Interasia": parse_interasia,
+                    "Cosco-Gulf": parse_cosco_gulf,
+                    "Cosco-WCSA & CB": parse_cosco_wcsa_cb,
+                    "Cosco-Africa": parse_cosco_africa,
+                    "Turkon": parse_turkon,
+                    "Cosco-Fareast": parse_cosco_fareast,
+                    "ZIM MRG": parse_zim
+                }
+                try:
+                    custom_vendors_ref = db.collection('custom_vendors')
+                    custom_doc = custom_vendors_ref.document(vendor).get()
+                    if custom_doc.exists:
+                        selected_columns = custom_doc.to_dict().get('columns', ['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS'])
+                        df, info = parse_custom_vendor(uploaded_file, month_year, selected_columns)
+                    else:
+                        df, info = parser_map[vendor](uploaded_file, month_year)
+                    if not df.empty:
+                        save_to_firestore(vendor, month_year, df, info)
+                        if custom_doc.exists:
+                            save_custom_vendor_metadata(vendor, selected_columns)
+                        st.cache_data.clear()
+                        data, pod_suggestions, pol_suggestions_from_db = load_from_firestore()
+                        st.session_state.pod_suggestions = sorted(pod_suggestions)
+                        mandatory_pols = {"Nhava Sheva", "Rajula", "Pipavav"}
+                        st.session_state.pol_suggestions = sorted(list(set(pol_suggestions_from_db) | mandatory_pols))
+                        st.success(f"Data for {vendor} ({month_year}) parsed and stored successfully! Overwritten if previously existed.")
+                        st.session_state.file_uploader_key += 1
+                        st.rerun()
+                    else:
+                        st.warning(f"No data extracted for {vendor} ({month_year}). Check file format.")
+                except Exception as e:
+                    st.error(f"Error parsing file: {str(e)}")
+                    st.session_state.file_uploader_key += 1
+                    st.rerun()
+
+    elif selected_section == "Vendors":
+        with st.container():
+            st.subheader("Vendors")
+            data, _, _ = load_from_firestore()
+            vendors = get_all_vendors()
+            num_columns = 5
+            num_rows = (len(vendors) + num_columns - 1) // num_columns
+            for row_idx in range(num_rows):
+                cols = st.columns(num_columns)
+                for col_idx in range(num_columns):
+                    vendor_idx = row_idx * num_columns + col_idx
+                    if vendor_idx < len(vendors):
+                        with cols[col_idx]:
+                            vendor = vendors[vendor_idx]
+                            record_count = len(data.get(vendor, {}))
+                            button_text = f"{vendor} ({record_count} records)"
+                            if st.button(button_text, key=f"vendor_{vendor}", help=f"View {vendor} data", use_container_width=True):
+                                st.session_state.page = 'vendor'
+                                st.session_state.selected_vendor = vendor
+                                st.rerun()
+
+    elif selected_section == "Add New Vendor":
+        with st.container():
+            st.subheader("Add New Vendor")
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                new_vendor_name = st.text_input("Vendor Name", help="Enter a unique name for the new vendor")
+            with col2:
+                st.write("")
+                add_vendor_button = st.button("Add Vendor")
+            
+            possible_columns = ['POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'ROUTING', 'TRANSIT TIME', 'VALIDITY', 'SERVICE', 'EXPIRY DATE']
+            selected_columns = st.multiselect("Select Column Headings", possible_columns, default=['POL', 'PORT'], help="Select the columns to include for the new vendor.")
+
+            if add_vendor_button and new_vendor_name:
+                vendors = get_all_vendors()
+                if new_vendor_name in vendors:
+                    st.error(f"Vendor '{new_vendor_name}' already exists. Choose a different name.")
+                elif not new_vendor_name.strip():
+                    st.error("Vendor name cannot be empty.")
+                elif not selected_columns:
+                    st.error("Please select at least one column for the new vendor.")
+                else:
+                    with st.spinner(f"Adding vendor '{new_vendor_name}'..."):
+                        save_custom_vendor_metadata(new_vendor_name, selected_columns)
+                    st.success(f"Vendor '{new_vendor_name}' added successfully!")
+                    st.rerun()
+
+            st.write("Download an Excel template with the selected column headings.")
+            excel_buffer = io.BytesIO()
+            if new_vendor_name.strip() and selected_columns:
+                df = pd.DataFrame(columns=selected_columns)
+                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                    df.to_excel(writer, sheet_name=new_vendor_name, index=False)
+                excel_buffer.seek(0)
+            else:
+                excel_buffer = None
+
+            st.download_button(
+                label="Download Template",
+                data=excel_buffer if excel_buffer else io.BytesIO(),
+                file_name=f"{new_vendor_name}_template.xlsx" if new_vendor_name.strip() else "template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                disabled=not (new_vendor_name.strip() and selected_columns),
+                help="Click to download an Excel template with the selected column headings."
+            )
+
+    elif selected_section == "Remove Vendor":
+        with st.container():
+            st.subheader("Remove Vendor")
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                vendors = get_all_vendors()
+                vendor_to_remove = st.selectbox("Select Vendor to Remove", [""] + vendors, format_func=lambda x: "" if x == "" else x, help="Select a vendor to remove")
+            with col2:
+                st.write("")
+                remove_vendor_button = st.button("Remove Vendor")
+            
+            if remove_vendor_button and vendor_to_remove:
+                if not vendor_to_remove:
+                    st.error("Please select a vendor to remove.")
+                else:
+                    with st.spinner(f"Removing vendor '{vendor_to_remove}'..."):
+                        delete_vendor_from_firestore(vendor_to_remove)
+                    st.rerun()
+
+    elif selected_section == "Search Vendor Data":
+        with st.container():
+            st.subheader("Search Vendor Data")
+            # Adjust column widths to fit POL, POD/PORT, Carrier, Month, Year, Equipment, and Search button in one row
+            col1, col2, col3, col4, col5, col6, col7 = st.columns([1.5, 1.5, 1.5, 1, 1, 1, 0.5])
+
+            current_date = datetime.now()
+            current_month = current_date.strftime("%b")
+            current_year = str(current_date.year)
+
+            with col1:
+                pol_input = st.selectbox("POL", [""] + st.session_state.pol_suggestions,
+                                        format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
+            with col2:
+                pod_input = st.selectbox("POD/PORT", [""] + st.session_state.pod_suggestions,
+                                        format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
+            with col3:
+                data, _, _ = load_from_firestore()
+                vendors = sorted(data.keys())  # Extract vendor names from the data dictionary
+                carrier_input = st.selectbox("Carrier", [""] + vendors,
+                                            format_func=lambda x: "" if x == "" else x,
+                                            help="Start typing to see vendor names")
+            with col4:
+                months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                month_index = months.index(current_month) if current_month in months else 0
+                month_input = st.selectbox("Month", months, index=month_index,
+                                           format_func=lambda x: "" if x == "" else x, help="Select a month")
+            with col5:
+                years = [""] + [str(y) for y in range(2025, 2031)]
+                year_index = years.index(current_year) if current_year in years else 0
+                year_input = st.selectbox("Year", years, index=year_index,
+                                          format_func=lambda x: "" if x == "" else x, help="Select a year")
+            with col6:
+                equipment_options = ["20", "40STD", "40HC"]
+                equipment = st.multiselect("Equipment", equipment_options, default=[],
+                                           help="Select one or more equipment types")
+            with col7:
+                st.markdown("<br>", unsafe_allow_html=True)  # Add vertical alignment
+                if st.button("🔍", help="Search", use_container_width=True):
+                    if not (pol_input or carrier_input):
+                        st.warning("Please select at least one of POL or Carrier.")
+                    elif not (pod_input or equipment):
+                        st.warning("Please enter a POD/PORT or select at least one equipment type.")
+                    else:
+                        month = month_input[:3].upper() if month_input else None
+                        year = year_input if year_input else None
+                        results = query_firestore(pol_input, pod_input, equipment, month=month, year=year)
+                        if carrier_input:
+                            results = results[results['Vendor'].str.lower() == carrier_input.lower()] if not results.empty else results
+                        st.session_state.search_results = results
+                        if st.session_state.search_results.empty:
+                            st.info("No matching records found.")
+
+            if not st.session_state.search_results.empty:
+                st.subheader("Search Results")
+                display_columns = ['Vendor', 'Month-Year', 'POL', 'PORT'] + \
+                                [e for e in equipment if e in st.session_state.search_results.columns]
+                additional_cols = ['REMARKS', 'ROUTING', 'TRANSIT TIME', 'VALIDITY', 'SERVICE NAME',
+                                'SERVICE', 'EXPIRY DATE', 'Sheet', 'IMO SC PER TEU', '20 Haz', '40 Haz', "40'HRF"]
+                display_columns.extend([c for c in additional_cols if c in st.session_state.search_results.columns])
+
+                if 'POL' in st.session_state.search_results.columns:
+                    st.session_state.search_results['POL'] = st.session_state.search_results['POL'].apply(standardize_pol)
+                if 'POD' in st.session_state.search_results.columns:
+                    st.session_state.search_results = st.session_state.search_results.rename(columns={'POD': 'PORT'})
+
+                st.dataframe(st.session_state.search_results[display_columns])
 
 def vendor_page():
     vendor = st.session_state.selected_vendor
@@ -2844,7 +3038,71 @@ def vendor_page():
                 st.success(f"Deleted {month_year} data for {vendor}.")
                 st.rerun()
 
+def add_vendor_page():
+    st.title("Add New Vendor")
+    vendor_name = st.session_state.new_vendor_name
+
+    # Column selection
+    available_columns = [
+        'POL', 'PORT', '20', '40STD', '40HC', 'REMARKS', 'ROUTING',
+        'TRANSIT TIME', 'SERVICE', 'VALIDITY', 'EXPIRY DATE'
+    ]
+    selected_columns = st.multiselect(
+        "Select Columns (POL and PORT are required)",
+        available_columns,
+        default=['POL', 'PORT'],
+        help="Select the columns present in your Excel file. POL and PORT are mandatory."
+    )
+
+    # Month and Year selection
+    col1, col2 = st.columns(2)
+    with col1:
+        month = st.selectbox("Month", ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])
+    with col2:
+        year = st.selectbox("Year", [2025, 2026, 2027, 2028, 2029, 2030], format_func=lambda x: str(x))
+    month_year = f"{year}-{month[:3].upper()}"
+
+    # File uploader
+    uploaded_file = st.file_uploader("Upload Excel File", type=['xlsx'], key=f"new_vendor_uploader")
+
+    # Buttons
+    col3, col4 = st.columns([1, 1])
+    with col3:
+        if st.button("Save Vendor and Parse Data"):
+            if not uploaded_file:
+                st.error("Please upload an Excel file.")
+            elif 'POL' not in selected_columns or 'PORT' not in selected_columns:
+                st.error("POL and PORT are required columns.")
+            else:
+                try:
+                    # Parse the file
+                    df, info = parse_custom_vendor(uploaded_file, month_year, selected_columns)
+                    if not df.empty:
+                        # Save vendor metadata and data
+                        save_custom_vendor_metadata(vendor_name, selected_columns)
+                        save_to_firestore(vendor_name, month_year, df, info)
+                        # Update suggestions
+                        st.cache_data.clear()
+                        data, pod_suggestions, pol_suggestions_from_db = load_from_firestore()
+                        st.session_state.pod_suggestions = sorted(pod_suggestions)
+                        mandatory_pols = {"Nhava Sheva", "Rajula", "Pipavav"}
+                        st.session_state.pol_suggestions = sorted(list(set(pol_suggestions_from_db) | mandatory_pols))
+                        st.success(f"Vendor '{vendor_name}' added and data for {month_year} stored successfully!")
+                        st.session_state.page = 'main'
+                        st.session_state.new_vendor_name = None
+                        st.rerun()
+                    else:
+                        st.warning("No data extracted from the file. Check the file format and column mappings.")
+                except Exception as e:
+                    st.error(f"Error processing file: {str(e)}")
+    with col4:
+        if st.button("Cancel"):
+            st.session_state.page = 'main'
+            st.session_state.new_vendor_name = None
+            st.rerun()
 if st.session_state.page == 'main':
     main_page()
+elif st.session_state.page == 'add_vendor':
+    add_vendor_page()
 else:
     vendor_page()
