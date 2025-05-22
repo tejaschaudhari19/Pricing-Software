@@ -132,7 +132,12 @@ def parse_turkon(file, month_year):
 
         df = pd.DataFrame(records)
         df['POL'] = df['POL'].apply(standardize_pol)  # Standardize POL names
+
+        # Split ports in the PORT column
+        df = split_ports(df, port_column='PORT')
+
         return df, []
+        
     except Exception as e:
         print(f"Error parsing Turkon file: {str(e)}")
         return pd.DataFrame(), [f"Error parsing Turkon file: {str(e)}"]
@@ -162,7 +167,14 @@ def parse_oocl(file, month_year):
             data.append(df)
         except ValueError:
             continue
-    return pd.concat(data, ignore_index=True) if data else pd.DataFrame(), []
+
+    # Concatenate all DataFrames from different sheets
+    result_df = pd.concat(data, ignore_index=True) if data else pd.DataFrame()
+
+    # Split ports in the PORT column
+    result_df = split_ports(result_df, port_column='PORT')
+
+    return result_df, []
 
 def parse_emirates(file, month_year):
     try:
@@ -255,6 +267,10 @@ def parse_emirates(file, month_year):
 
         # Combine results
         result_df = pd.concat(data, ignore_index=True) if data else pd.DataFrame()
+
+        # Split ports in the PORT column
+        result_df = split_ports(result_df, port_column='PORT')
+
         return result_df, all_terms
 
     except Exception as e:
@@ -296,6 +312,9 @@ def parse_hmm(file, month_year):
             rename_map[forty_std_col] = '40STD'
         if forty_hc_col:
             rename_map[forty_hc_col] = '40HC'
+
+        # Split ports in the PORTS column before renaming
+        parsed = split_ports(parsed, port_column='PORTS')
 
         parsed = parsed.rename(columns=rename_map)
         parsed = parsed.dropna(subset=['POL', 'PORT'], how='all')  # Drop rows where both POL and PORT are NaN
@@ -395,6 +414,10 @@ def parse_wan_hai(file, month_year):
         # Add POL column
         df.insert(0, 'POL', 'Nhava Sheva')
         df['POL'] = df['POL'].apply(standardize_pol)  # Standardize POL names
+
+        # Split ports in the PORT column
+        df = split_ports(df, port_column='PORT')
+
         return df, []
     except Exception as e:
         print(f"Error parsing Wan Hai file: {str(e)}")
@@ -776,6 +799,9 @@ def parse_msc(file, month_year):
         parsed.insert(0, 'POL', 'Nhava Sheva')
         parsed['POL'] = parsed['POL'].apply(standardize_pol)
 
+        # Split ports in the PORT column
+        parsed = split_ports(parsed, port_column='PORT')
+
         return parsed, []
 
     except Exception as e:
@@ -858,6 +884,9 @@ def parse_pil(file, month_year):
         parsed_pil = parsed_pil[~((parsed_pil['20'].isna() | (parsed_pil['20'] == 'nan')) & 
                                   (parsed_pil['40STD'].isna() | (parsed_pil['40STD'] == 'nan')))]
 
+        # Split ports in the PORT column
+        parsed_pil = split_ports(parsed_pil, port_column='PORT')
+
         return parsed_pil, info
     except Exception as e:
         print(f"Error parsing PIL MRG file: {str(e)}")
@@ -917,6 +946,9 @@ def parse_arkas(file, month_year):
 
         parsed_arkas = parsed_arkas.dropna(subset=['POL', 'PORT'])
         parsed_arkas = parsed_arkas[(parsed_arkas['POL'].str.strip() != '') & (parsed_arkas['PORT'].str.strip() != '')]
+
+        # Split ports in the PORT column
+        parsed_arkas = split_ports(parsed_arkas, port_column='PORT')
 
         return parsed_arkas, []
     except Exception as e:
@@ -1017,6 +1049,9 @@ def parse_interasia(file, month_year):
             (df['PORT'].notna() & df['PORT'].astype(str).str.strip().ne(''))
         ]
 
+        # Split ports in the PORT column
+        df = split_ports(df, port_column='PORT')
+
         return df, []
     except Exception as e:
         print(f"Error parsing Interasia file: {str(e)}")
@@ -1089,6 +1124,9 @@ def parse_cosco_gulf(file, month_year):
             # Remove empty or invalid rows
             parsed_cosco_gulf = parsed_cosco_gulf.dropna(subset=['PORT', '20', '40STD'])
             parsed_cosco_gulf = parsed_cosco_gulf[parsed_cosco_gulf['PORT'].str.strip() != '']
+
+            # Split ports in the PORT column
+            parsed_cosco_gulf = split_ports(parsed_cosco_gulf, port_column='PORT')
 
             return parsed_cosco_gulf, info_lines
 
@@ -1166,6 +1204,9 @@ def parse_cosco_wcsa_cb(file, month_year):
             # Remove empty or invalid rows
             parsed_wcsa_cb = parsed_wcsa_cb.dropna(subset=['PORT', '20', '40STD'])
             parsed_wcsa_cb = parsed_wcsa_cb[parsed_wcsa_cb['PORT'].str.strip() != '']
+
+            # Split ports in the PORT column
+            parsed_wcsa_cb = split_ports(parsed_wcsa_cb, port_column='PORT')
 
             return parsed_wcsa_cb, wcsa_remarks
 
@@ -1247,6 +1288,9 @@ def parse_cosco_africa(file, month_year):
         # Remove empty or invalid rows
         parsed_cosco_africa = parsed_cosco_africa.dropna(subset=['PORT', '20', '40STD'])
         parsed_cosco_africa = parsed_cosco_africa[parsed_cosco_africa['PORT'].str.strip() != '']
+
+        # Split ports in the PORT column
+        parsed_cosco_africa = split_ports(parsed_cosco_africa, port_column='PORT')
 
         return parsed_cosco_africa, full_post_table_remarks
 
@@ -1354,6 +1398,9 @@ def parse_cosco_fareast(file, month_year):
             df = df.sort_values(by=['POL_ORDER', 'PORT']).drop(columns=['POL_ORDER'])
             df = df.dropna(subset=['20', '40STD', '40HC'], how='all')
 
+        # Split ports in the PORT column
+        df = split_ports(df, port_column='PORT')
+
         additional_info = list(dict.fromkeys(additional_info))
         return df, additional_info
 
@@ -1417,96 +1464,94 @@ def parse_zim(file, month_year):
             }
             return mapping.get(pol, pol.title())
 
+        def is_cell_strikethrough(cell):
+            """Check if a cell has strikethrough formatting."""
+            if cell.value is None:
+                return False
+            font = cell.font
+            return font.strike if font else False
+        
+        def format_rates_with_dollar(df):
+            for col in ['20', '40STD', '40HC']:
+                if col in df.columns:
+                    df[col] = df[col].apply(
+                        lambda x: f"${int(x)}" if pd.notna(x) and isinstance(x, (int, float)) and x == int(x)
+                        else f"${x}" if pd.notna(x) else ""
+                    )
+            return df
+
         def process_turkey_med_sheet(sheet_name):
             remarks = []
             try:
                 wb = load_workbook(file, data_only=True)
-                ws_data = wb[sheet_name]
+                ws = wb[sheet_name]
                 records = []
-                header_row = None
+                parsed_ports = set()
 
-                for row_idx, row in enumerate(ws_data.iter_rows(min_row=1, max_row=100), start=1):
-                    row_vals = [str(cell.value).strip().upper() for cell in row if cell.value not in (None, '')]
-                    row_str = ' '.join(row_vals)
-                    if any(x in row_str for x in ['NHAVA', 'NS', 'NSA', 'NHV', 'INNHV', 'HAZIRA', 'HZ', 'INHZA', 'POD', 'PORT', 'DEST', 'DESTINATION', 'DISCHARGE', '20', '40', 'HC']):
-                        header_row = row
-                        header_row_idx = row_idx
-                        break
-                if not header_row:
-                    print(f"No header row found in sheet '{sheet_name}' after searching 100 rows")
-                    for row_idx, row in enumerate(ws_data.iter_rows(min_row=1, max_row=50), start=1):
-                        print(f"Row {row_idx}: {[str(cell.value) for cell in row]}")
-                    return fallback_parse_turkey_med(file, sheet_name, remarks)
-
-                print(f"Found header row {header_row_idx} in '{sheet_name}': {[str(cell.value) for cell in header_row]}")
-                col_map = {}
-                for col_idx, cell in enumerate(header_row):
-                    val = str(cell.value).strip().upper() if cell.value else ''
-                    if any(n in val for n in ['NHAVA', 'NS', 'NSA', 'NHV', 'INNHV']):
-                        if '20' in val:
-                            col_map['nhv_20'] = col_idx
-                        elif any(h in val for h in ['40', 'HC']):
-                            col_map['nhv_40'] = col_idx
-                    elif any(h in val for h in ['HAZIRA', 'HZ', 'INHZA']):
-                        if '20' in val:
-                            col_map['hzr_20'] = col_idx
-                        elif any(h in val for h in ['40', 'HC']):
-                            col_map['hzr_40'] = col_idx
-                    elif any(p in val for p in ['POD', 'PORT', 'DEST', 'DESTINATION', 'DISCHARGE', 'DISCHARGE PORT', 'DEST. PORT']):
-                        col_map['pod'] = col_idx
-                print(f"Column mapping for '{sheet_name}': {col_map}")
-
-                if 'pod' not in col_map:
-                    print(f"No POD column identified in sheet '{sheet_name}'")
-                    return fallback_parse_turkey_med(file, sheet_name, remarks)
-
-                for row_idx, row in enumerate(ws_data.iter_rows(min_row=header_row_idx + 1), start=header_row_idx + 1):
-                    pod = str(row[col_map['pod']].value).strip() if col_map['pod'] < len(row) and row[col_map['pod']].value not in (None, '') else ''
-                    if not pod:
-                        print(f"Skipping row {row_idx} in sheet '{sheet_name}': Empty POD")
+                for idx, row in enumerate(ws.iter_rows(min_row=3), start=3):
+                    pod_cell = row[0]
+                    if not pod_cell or pod_cell.value is None or is_cell_strikethrough(pod_cell):
                         continue
+
+                    pod = str(pod_cell.value).strip()
+                    if not pod or pod.upper().startswith("SUBJECT") or pod.upper().startswith("POL"):
+                        break  # End of data section
                     if len(pod.split()) > 3:
                         remarks.append(pod)
                         continue
 
-                    nhv_20 = row[col_map['nhv_20']].value if 'nhv_20' in col_map and col_map['nhv_20'] < len(row) else None
-                    nhv_40 = row[col_map['nhv_40']].value if 'nhv_40' in col_map and col_map['nhv_40'] < len(row) else None
-                    hzr_20 = row[col_map['hzr_20']].value if 'hzr_20' in col_map and col_map['hzr_20'] < len(row) else None
-                    hzr_40 = row[col_map['hzr_40']].value if 'hzr_40' in col_map and col_map['hzr_40'] < len(row) else None
+                    parsed_ports.add(pod.title())
 
-                    nhv_20_clean = clean_numeric_series(pd.Series([nhv_20]))[0]
-                    nhv_40_clean = clean_numeric_series(pd.Series([nhv_40]))[0]
-                    hzr_20_clean = clean_numeric_series(pd.Series([hzr_20]))[0]
-                    hzr_40_clean = clean_numeric_series(pd.Series([hzr_40]))[0]
+                    def get_cleaned(idx):
+                        if idx >= len(row):
+                            return None
+                        cell = row[idx]
+                        return None if is_cell_strikethrough(cell) else cell.value
 
-                    row_data = {
-                        'Nhava Sheva 20': nhv_20,
-                        'Nhava Sheva 40HC': nhv_40,
-                        'Hazira 20': hzr_20,
-                        'Hazira 40HC': hzr_40
-                    }
-                    print(f"Row {row_idx} in '{sheet_name}': POD={pod}, Rates={row_data}")
+                    nhv_20 = clean_numeric_series(pd.Series([get_cleaned(1)]))[0]
+                    nhv_40 = clean_numeric_series(pd.Series([get_cleaned(2)]))[0]
+                    hzr_20 = clean_numeric_series(pd.Series([get_cleaned(3)]))[0]
+                    hzr_40 = clean_numeric_series(pd.Series([get_cleaned(4)]))[0]
 
-                    if pd.notna(nhv_20_clean) or pd.notna(nhv_40_clean):
+                    if pd.notna(nhv_20) or pd.notna(nhv_40):
                         records.append({
                             'POL': 'Nhava Sheva',
                             'PORT': pod.title(),
-                            '20': nhv_20_clean,
+                            '20': nhv_20,
                             '40STD': None,
-                            '40HC': nhv_40_clean,
+                            '40HC': nhv_40,
                             'Remarks': ''
                         })
-                    if pd.notna(hzr_20_clean) or pd.notna(hzr_40_clean):
+                    if pd.notna(hzr_20) or pd.notna(hzr_40):
                         records.append({
                             'POL': 'Hazira',
                             'PORT': pod.title(),
-                            '20': hzr_20_clean,
+                            '20': hzr_20,
                             '40STD': None,
-                            '40HC': hzr_40_clean,
+                            '40HC': hzr_40,
                             'Remarks': ''
                         })
-                    if not (pd.notna(nhv_20_clean) or pd.notna(nhv_40_clean) or pd.notna(hzr_20_clean) or pd.notna(hzr_40_clean)):
-                        print(f"Skipping row {row_idx} in sheet '{sheet_name}': No valid rates (Nhava Sheva: 20={nhv_20}, 40HC={nhv_40}, Hazira: 20={hzr_20}, 40HC={hzr_40})")
+
+                # ✅ Collect Additional Information (true remarks only)
+                seen_lines = set()
+                for row in ws.iter_rows(min_row=1, max_row=80):
+                    line = " ".join(str(cell.value).strip() for cell in row if cell.value and str(cell.value).strip())
+                    if not line or line in seen_lines:
+                        continue
+                    seen_lines.add(line)
+
+                    # Skip lines that start with a parsed POD
+                    if any(line.upper().startswith(pod.upper()) for pod in parsed_ports):
+                        continue
+
+                    # Skip lines that look like tabular data (≥3 numeric tokens)
+                    numeric_token_count = sum(1 for token in line.split() if token.replace('.', '', 1).isdigit())
+                    if numeric_token_count >= 3:
+                        continue
+
+                    # Keep meaningful remarks only
+                    if len(line.split()) > 3:
+                        remarks.append(line)
 
                 df_final = pd.DataFrame(records)
                 if df_final.empty:
@@ -1518,53 +1563,58 @@ def parse_zim(file, month_year):
                 df_final = df_final.sort_values(by='POL_ORDER').drop(columns='POL_ORDER')
                 df_final = df_final[['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']]
                 print(f"Parsed {len(df_final)} records from sheet '{sheet_name}', collected {len(remarks)} remarks")
-                return df_final, remarks
+                return df_final, list(dict.fromkeys(remarks))  # unique remarks
 
             except Exception as e:
                 print(f"Error in process_turkey_med_sheet for sheet '{sheet_name}': {str(e)}")
                 print(f"Full traceback: {traceback.format_exc()}")
-                return fallback_parse_turkey_med(file, sheet_name, remarks)
+                return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), [f"Error: {str(e)}"]
+
 
         def fallback_parse_turkey_med(file, sheet_name, remarks):
             print(f"Attempting fallback parsing for sheet '{sheet_name}' using pandas")
             try:
                 df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
+                wb = load_workbook(file, data_only=True)
+                ws_data = wb[sheet_name]
                 print(f"Read {len(df_raw)} rows from sheet '{sheet_name}' with pandas")
                 
                 records = []
                 header_row_idx = None
                 col_map = {}
 
-                for row_idx, row in df_raw.head(20).iterrows():
-                    row_vals = [str(val).strip().upper() for val in row if pd.notna(val) and str(val).strip()]
+                # Find header row
+                for row_idx, row in enumerate(ws_data.iter_rows(min_row=1, max_row=20), start=1):
+                    row_vals = [str(cell.value).strip().upper() for cell in row if cell.value not in (None, '') and not is_cell_strikethrough(cell)]
                     row_str = ' '.join(row_vals)
-                    has_keywords = any(x in row_str for x in ['NHAVA', 'NS', 'NSA', 'NHV', 'INNHV', 'HAZIRA', 'HZ', 'INHZA', 'POD', 'PORT', 'DEST', 'DESTINATION', 'DISCHARGE', 'DISCHARGE PORT', 'DEST. PORT', '20', '40', 'HC'])
-                    if has_keywords:
-                        header_row_idx = row_idx
+                    if any(x in row_str for x in ['NHAVA', 'NS', 'NSA', 'NHV', 'INNHV', 'HAZIRA', 'HZ', 'INHZA', 'POD', 'PORT', 'DEST', 'DESTINATION', 'DISCHARGE', '20', '40', 'HC']):
+                        header_row_idx = row_idx - 1
                         header_row = row
                         break
 
                 if header_row_idx is None:
                     print(f"Fallback: No header row found in sheet '{sheet_name}' after searching 20 rows")
-                    for idx, row in df_raw.head(50).iterrows():
-                        print(f"Row {idx+1}: {[str(val) for val in row]}")
+                    for row_idx, row in enumerate(ws_data.iter_rows(min_row=1, max_row=50), start=1):
+                        print(f"Row {row_idx}: {[str(cell.value) for cell in row]}")
                     return data_driven_parse_turkey_med(df_raw, sheet_name, remarks)
 
-                print(f"Fallback: Found header row {header_row_idx+1} in '{sheet_name}': {[str(val) for val in header_row]}")
-                row_vals = [str(val).strip().upper() for val in header_row if pd.notna(val)]
+                print(f"Fallback: Found header row {header_row_idx+1} in '{sheet_name}': {[str(cell.value) for cell in header_row]}")
+                row_vals = [str(cell.value).strip().upper() for cell in header_row if cell.value and not is_cell_strikethrough(cell)]
                 pol_cols = {}
                 if any(pol in ' '.join(row_vals) for pol in ['INNHV', 'INHZA', 'NHAVA', 'HAZIRA']):
                     if header_row_idx + 1 < len(df_raw):
-                        next_row = df_raw.iloc[header_row_idx + 1]
-                        next_row_vals = [str(val).strip().upper() for val in next_row if pd.notna(val)]
-                        print(f"Fallback: Checking next row {header_row_idx+2} for container types: {[str(val) for val in next_row]}")
+                        next_row = [cell for cell in ws_data[header_row_idx + 1]]
+                        next_row_vals = [str(cell.value).strip().upper() for cell in next_row if cell.value and not is_cell_strikethrough(cell)]
+                        print(f"Fallback: Checking next row {header_row_idx+2} for container types: {[str(cell.value) for cell in next_row]}")
                         if any(ct in ' '.join(next_row_vals) for ct in ['20', '40', 'HC']):
                             pol_row = header_row
                             container_row = next_row
                             header_row_idx += 1
-                            for col_idx, (pol_val, cont_val) in enumerate(zip(pol_row, container_row)):
-                                pol_val = str(pol_val).strip().upper() if pd.notna(pol_val) else ''
-                                cont_val = str(cont_val).strip().upper() if pd.notna(cont_val) else ''
+                            for col_idx, (pol_cell, cont_cell) in enumerate(zip(pol_row, container_row)):
+                                if is_cell_strikethrough(pol_cell) or is_cell_strikethrough(cont_cell):
+                                    continue
+                                pol_val = str(pol_cell.value).strip().upper() if pol_cell.value else ''
+                                cont_val = str(cont_cell.value).strip().upper() if cont_cell.value else ''
                                 if 'INNHV' in pol_val or 'NHAVA' in pol_val:
                                     if '20' in cont_val:
                                         col_map['nhv_20'] = col_idx
@@ -1581,16 +1631,20 @@ def parse_zim(file, month_year):
                                         pol_cols[col_idx] = 'Hazira'
                             print(f"Fallback: Updated column mapping after container row: {col_map}")
 
-                for col_idx, val in enumerate(header_row):
-                    val = str(val).strip().upper() if pd.notna(val) else ''
+                for col_idx, cell in enumerate(header_row):
+                    if is_cell_strikethrough(cell):
+                        continue
+                    val = str(cell.value).strip().upper() if cell.value else ''
                     if any(p in val for p in ['POD', 'PORT', 'DEST', 'DESTINATION', 'DISCHARGE', 'DISCHARGE PORT', 'DEST. PORT']):
                         col_map['pod'] = col_idx
                         break
 
                 if 'pod' not in col_map:
-                    for row_idx, row in df_raw.iloc[header_row_idx+1:header_row_idx+10].iterrows():
-                        for col_idx, val in enumerate(row):
-                            val = str(val).strip() if pd.notna(val) else ''
+                    for row_idx, row in enumerate(ws_data.iter_rows(min_row=header_row_idx+1, max_row=header_row_idx+10), start=header_row_idx+1):
+                        for col_idx, cell in enumerate(row):
+                            if is_cell_strikethrough(cell):
+                                continue
+                            val = str(cell.value).strip() if cell.value else ''
                             if not val:
                                 continue
                             is_numeric = bool(re.match(r'^-?\d+(\.\d+)?$', val.replace(',', '').replace(' ', '')))
@@ -1611,8 +1665,12 @@ def parse_zim(file, month_year):
 
                 print(f"Fallback column mapping for '{sheet_name}': {col_map}")
 
-                for row_idx, row in df_raw.iloc[header_row_idx+1:].iterrows():
-                    pod = str(row[col_map['pod']]).strip() if col_map['pod'] < len(row) and pd.notna(row[col_map['pod']]) else ''
+                for row_idx, row in enumerate(ws_data.iter_rows(min_row=header_row_idx+1), start=header_row_idx+1):
+                    pod_cell = row[col_map['pod']] if col_map['pod'] < len(row) else None
+                    if pod_cell and is_cell_strikethrough(pod_cell):
+                        print(f"Fallback: Skipping row {row_idx+1} in sheet '{sheet_name}': POD '{pod_cell.value}' is struck through")
+                        continue
+                    pod = str(pod_cell.value).strip() if pod_cell and pod_cell.value not in (None, '') else ''
                     if not pod:
                         print(f"Fallback: Skipping row {row_idx+1} in sheet '{sheet_name}': Empty POD")
                         continue
@@ -1620,10 +1678,10 @@ def parse_zim(file, month_year):
                         remarks.append(pod)
                         continue
 
-                    nhv_20 = row[col_map['nhv_20']] if 'nhv_20' in col_map and col_map['nhv_20'] < len(row) else None
-                    nhv_40 = row[col_map['nhv_40']] if 'nhv_40' in col_map and col_map['nhv_40'] < len(row) else None
-                    hzr_20 = row[col_map['hzr_20']] if 'hzr_20' in col_map and col_map['hzr_20'] < len(row) else None
-                    hzr_40 = row[col_map['hzr_40']] if 'hzr_40' in col_map and col_map['hzr_40'] < len(row) else None
+                    nhv_20 = row[col_map['nhv_20']].value if 'nhv_20' in col_map and col_map['nhv_20'] < len(row) and not is_cell_strikethrough(row[col_map['nhv_20']]) else None
+                    nhv_40 = row[col_map['nhv_40']].value if 'nhv_40' in col_map and col_map['nhv_40'] < len(row) and not is_cell_strikethrough(row[col_map['nhv_40']]) else None
+                    hzr_20 = row[col_map['hzr_20']].value if 'hzr_20' in col_map and col_map['hzr_20'] < len(row) and not is_cell_strikethrough(row[col_map['hzr_20']]) else None
+                    hzr_40 = row[col_map['hzr_40']].value if 'hzr_40' in col_map and col_map['hzr_40'] < len(row) and not is_cell_strikethrough(row[col_map['hzr_40']]) else None
 
                     nhv_20_clean = clean_numeric_series(pd.Series([nhv_20]))[0]
                     nhv_40_clean = clean_numeric_series(pd.Series([nhv_40]))[0]
@@ -1763,7 +1821,7 @@ def parse_zim(file, month_year):
                     'Hazira 20': hzr_20,
                     'Hazira 40HC': hzr_40
                 }
-                print(f"Data-driven: Row {row_idx+1} in sheet '{sheet_name}': POD={pod}, Rates={row_data}")
+                print(f"Data-driven: Row {row_idx+1} in '{sheet_name}': POD={pod}, Rates={row_data}")
 
                 if pd.notna(nhv_20_clean) or pd.notna(nhv_40_clean):
                     records.append({
@@ -1823,7 +1881,7 @@ def parse_zim(file, month_year):
                     print(f"No valid data rows in sheet '{sheet_name}'")
                     return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), remarks
                 df_data = pd.DataFrame(data_rows)
-                df_data['POL'] = pol_name
+                df_data['POL'] = 'Hazira' if 'hazira' in sheet_name.lower() else 'Nhava Sheva'
                 df_data['PORT'] = df_data['PORT'].astype(str).str.strip()
                 print(f"Sheet '{sheet_name}' rate columns sample: {df_data[['20', '40HC']].head().to_dict()}")
                 df_data['20'] = clean_numeric_series(df_data['20'])
@@ -1838,100 +1896,6 @@ def parse_zim(file, month_year):
                 return parsed_df, remarks
             except Exception as e:
                 print(f"Error in process_generic_sheet for sheet '{sheet_name}': {str(e)}")
-                return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), remarks + [f"Error in '{sheet_name}': {str(e)}"]
-
-        def process_africa_sheet(sheet_name):
-            remarks = []
-            try:
-                df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
-                table_start_row = None
-                for idx, row in df_raw.iterrows():
-                    row_str = ' '.join(row.dropna().astype(str).str.upper())
-                    if "MUNDRA" in row_str or "NHAVA SHEVA" in row_str or "PIPAVAV" in row_str:
-                        table_start_row = idx
-                        break
-                if table_start_row is None:
-                    print(f"Could not detect table start in '{sheet_name}' sheet")
-                    return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), [f"Could not detect table start in '{sheet_name}' sheet."]
-                for row_idx in range(table_start_row):
-                    row = df_raw.iloc[row_idx]
-                    for cell in row:
-                        if pd.notna(cell) and str(cell).strip():
-                            remarks.append(str(cell).strip())
-                known_ports = ["APAPA", "TINCAN", "TEMA", "ABIDJAN", "COTONOU", "CONTONU", "LOME", "LEKKI", "ONNE", "MOMBASA", "DAR ES SALAAM"]
-                port_row_idx = None
-                for idx in range(table_start_row + 1, len(df_raw)):
-                    row = df_raw.iloc[idx]
-                    row_str = ' '.join(row.dropna().astype(str).str.upper())
-                    if any(port in row_str for port in known_ports):
-                        port_row_idx = idx
-                        break
-                if port_row_idx is None:
-                    print(f"Could not detect PORT row in '{sheet_name}' sheet")
-                    return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), [f"Could not detect PORT row in '{sheet_name}' sheet."]
-                for row_idx in range(table_start_row + 1, port_row_idx):
-                    row = df_raw.iloc[row_idx]
-                    for cell in row:
-                        if pd.notna(cell) and str(cell).strip():
-                            remarks.append(str(cell).strip())
-                pol_row = df_raw.iloc[table_start_row].dropna().astype(str).str.upper()
-                port_row = df_raw.iloc[port_row_idx].dropna().astype(str)
-                header_row = df_raw.iloc[port_row_idx + 1].dropna().astype(str)
-                pols = [standardize_pol(p.strip()) for p in pol_row.iloc[0].split('/')] if not pol_row.empty else []
-                ports = port_row.tolist()
-                headers = header_row.tolist()
-                if len(ports) == 0 or len(headers) == 0:
-                    print(f"No PORTs or headers in '{sheet_name}' sheet")
-                    return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), [f"No PORTs or headers in '{sheet_name}' sheet."]
-                if "west africa" in sheet_name.lower().strip():
-                    if len(headers) % 2 != 0 or len(headers) // 2 != len(ports):
-                        print(f"Inconsistent PORT or header structure in '{sheet_name}' sheet")
-                        return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), [f"Inconsistent PORT or header structure in '{sheet_name}' sheet."]
-                else:
-                    if len(ports) * 2 != len(headers):
-                        print(f"Inconsistent PORT or header structure in '{sheet_name}' sheet")
-                        return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), [f"Inconsistent PORT or header structure in '{sheet_name}' sheet."]
-                data_start_row = port_row_idx + 2
-                while data_start_row < len(df_raw):
-                    data_row = df_raw.iloc[data_start_row]
-                    if any(pd.to_numeric(str(cell), errors='coerce') == cell for cell in data_row.iloc[:len(headers)] if pd.notna(cell)):
-                        break
-                    for cell in data_row:
-                        if pd.notna(cell) and str(cell).strip():
-                            remarks.append(str(cell).strip())
-                    data_start_row += 1
-                if data_start_row >= len(df_raw):
-                    print(f"No data rows found in '{sheet_name}' sheet")
-                    return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), remarks
-                data_rows = df_raw.iloc[data_start_row:data_start_row + 1]
-                if data_rows.empty or len(data_rows.columns) < len(headers):
-                    print(f"No valid data rows or insufficient columns in '{sheet_name}' sheet")
-                    return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), remarks
-                data_frames = []
-                for port_idx, port in enumerate(ports):
-                    dv20_value = data_rows.iloc[0, 2 * port_idx] if 2 * port_idx < len(data_rows.columns) else None
-                    hc40_value = data_rows.iloc[0, 2 * port_idx + 1] if 2 * port_idx + 1 < len(data_rows.columns) else None
-                    dv20_clean = clean_numeric_series(pd.Series([dv20_value]))[0]
-                    hc40_clean = clean_numeric_series(pd.Series([hc40_value]))[0]
-                    if pd.isna(dv20_clean) and pd.isna(hc40_clean):
-                        continue
-                    for pol in pols:
-                        df_pol_port = pd.DataFrame({
-                            'POL': [pol],
-                            'PORT': [port.title()],
-                            '20': [dv20_clean],
-                            '40HC': [hc40_clean],
-                            '40STD': [np.nan],
-                            'Remarks': ['']
-                        })
-                        data_frames.append(df_pol_port)
-                parsed_df = pd.concat(data_frames, ignore_index=True) if data_frames else pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks'])
-                parsed_df['POL'] = parsed_df['POL'].apply(standardize_pol)
-                parsed_df = parsed_df[parsed_df['PORT'].str.strip() != '']
-                print(f"Parsed {len(parsed_df)} rows from sheet '{sheet_name}', collected {len(remarks)} remarks")
-                return parsed_df, remarks
-            except Exception as e:
-                print(f"Error in process_africa_sheet for sheet '{sheet_name}': {str(e)}")
                 return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), remarks + [f"Error in '{sheet_name}': {str(e)}"]
 
         def process_australia_sheet(sheet_name):
@@ -2236,6 +2200,100 @@ def parse_zim(file, month_year):
                 print(f"Error in process_canada_sheet for sheet '{sheet_name}': {str(e)}")
                 return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), remarks + [f"Error in '{sheet_name}': {str(e)}"]
 
+        def process_africa_sheet(sheet_name):
+            remarks = []
+            try:
+                df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
+                table_start_row = None
+                for idx, row in df_raw.iterrows():
+                    row_str = ' '.join(row.dropna().astype(str).str.upper())
+                    if "MUNDRA" in row_str or "NHAVA SHEVA" in row_str or "PIPAVAV" in row_str:
+                        table_start_row = idx
+                        break
+                if table_start_row is None:
+                    print(f"Could not detect table start in '{sheet_name}' sheet")
+                    return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), [f"Could not detect table start in '{sheet_name}' sheet."]
+                for row_idx in range(table_start_row):
+                    row = df_raw.iloc[row_idx]
+                    for cell in row:
+                        if pd.notna(cell) and str(cell).strip():
+                            remarks.append(str(cell).strip())
+                known_ports = ["APAPA", "TINCAN", "TEMA", "ABIDJAN", "COTONOU", "CONTONU", "LOME", "LEKKI", "ONNE", "MOMBASA", "DAR ES SALAAM"]
+                port_row_idx = None
+                for idx in range(table_start_row + 1, len(df_raw)):
+                    row = df_raw.iloc[idx]
+                    row_str = ' '.join(row.dropna().astype(str).str.upper())
+                    if any(port in row_str for port in known_ports):
+                        port_row_idx = idx
+                        break
+                if port_row_idx is None:
+                    print(f"Could not detect PORT row in '{sheet_name}' sheet")
+                    return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), [f"Could not detect PORT row in '{sheet_name}' sheet."]
+                for row_idx in range(table_start_row + 1, port_row_idx):
+                    row = df_raw.iloc[row_idx]
+                    for cell in row:
+                        if pd.notna(cell) and str(cell).strip():
+                            remarks.append(str(cell).strip())
+                pol_row = df_raw.iloc[table_start_row].dropna().astype(str).str.upper()
+                port_row = df_raw.iloc[port_row_idx].dropna().astype(str)
+                header_row = df_raw.iloc[port_row_idx + 1].dropna().astype(str)
+                pols = [standardize_pol(p.strip()) for p in pol_row.iloc[0].split('/')] if not pol_row.empty else []
+                ports = port_row.tolist()
+                headers = header_row.tolist()
+                if len(ports) == 0 or len(headers) == 0:
+                    print(f"No PORTs or headers in '{sheet_name}' sheet")
+                    return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), [f"No PORTs or headers in '{sheet_name}' sheet."]
+                if "west africa" in sheet_name.lower().strip():
+                    if len(headers) % 2 != 0 or len(headers) // 2 != len(ports):
+                        print(f"Inconsistent PORT or header structure in '{sheet_name}' sheet")
+                        return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), [f"Inconsistent PORT or header structure in '{sheet_name}' sheet."]
+                else:
+                    if len(ports) * 2 != len(headers):
+                        print(f"Inconsistent PORT or header structure in '{sheet_name}' sheet")
+                        return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), [f"Inconsistent PORT or header structure in '{sheet_name}' sheet."]
+                data_start_row = port_row_idx + 2
+                while data_start_row < len(df_raw):
+                    data_row = df_raw.iloc[data_start_row]
+                    if any(pd.to_numeric(str(cell), errors='coerce') == cell for cell in data_row.iloc[:len(headers)] if pd.notna(cell)):
+                        break
+                    for cell in data_row:
+                        if pd.notna(cell) and str(cell).strip():
+                            remarks.append(str(cell).strip())
+                    data_start_row += 1
+                if data_start_row >= len(df_raw):
+                    print(f"No data rows found in '{sheet_name}' sheet")
+                    return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), remarks
+                data_rows = df_raw.iloc[data_start_row:data_start_row + 1]
+                if data_rows.empty or len(data_rows.columns) < len(headers):
+                    print(f"No valid data rows or insufficient columns in '{sheet_name}' sheet")
+                    return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), remarks
+                data_frames = []
+                for port_idx, port in enumerate(ports):
+                    dv20_value = data_rows.iloc[0, 2 * port_idx] if 2 * port_idx < len(data_rows.columns) else None
+                    hc40_value = data_rows.iloc[0, 2 * port_idx + 1] if 2 * port_idx + 1 < len(data_rows.columns) else None
+                    dv20_clean = clean_numeric_series(pd.Series([dv20_value]))[0]
+                    hc40_clean = clean_numeric_series(pd.Series([hc40_value]))[0]
+                    if pd.isna(dv20_clean) and pd.isna(hc40_clean):
+                        continue
+                    for pol in pols:
+                        df_pol_port = pd.DataFrame({
+                            'POL': [pol],
+                            'PORT': [port.title()],
+                            '20': [dv20_clean],
+                            '40HC': [hc40_clean],
+                            '40STD': [np.nan],
+                            'Remarks': ['']
+                        })
+                        data_frames.append(df_pol_port)
+                parsed_df = pd.concat(data_frames, ignore_index=True) if data_frames else pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks'])
+                parsed_df['POL'] = parsed_df['POL'].apply(standardize_pol)
+                parsed_df = parsed_df[parsed_df['PORT'].str.strip() != '']
+                print(f"Parsed {len(parsed_df)} rows from sheet '{sheet_name}', collected {len(remarks)} remarks")
+                return parsed_df, remarks
+            except Exception as e:
+                print(f"Error in process_africa_sheet for sheet '{sheet_name}': {str(e)}")
+                return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), remarks + [f"Error in '{sheet_name}': {str(e)}"]
+
         for sheet_name in sheets:
             sheet_name_lower = sheet_name.lower().strip()
             if 'turkey' in sheet_name_lower and 'med' in sheet_name_lower:
@@ -2252,11 +2310,50 @@ def parse_zim(file, month_year):
                 df, remarks = process_canada_sheet(sheet_name)
             elif 'africa' in sheet_name_lower:
                 df, remarks = process_africa_sheet(sheet_name)
+            elif 'usa' in sheet_name_lower:
+                df, remarks = process_usa_sheet(sheet_name, file)
             else:
                 df, remarks = process_generic_sheet(sheet_name, 'Nhava Sheva')
+
+            # Append parsed data
             if not df.empty:
                 data_frames.append(df)
+
+            # Add remarks as usual
             all_remarks.extend([f"{sheet_name}: {remark}" for remark in remarks if remark and len(remark.split()) > 2])
+
+            # ✅ Dynamically extract additional info from 4 specific sheets
+            if sheet_name.strip().lower() in ['nhava sheva - far east', 'hazira - far east', 'east africa', 'west africa', 'usa']:
+                try:
+                    wb = load_workbook(file, data_only=True)
+                    ws = wb[sheet_name]
+                    seen_lines = set()
+
+                    for row in ws.iter_rows():
+                        cell_values = [cell.value for cell in row if cell.value is not None]
+                        if not cell_values:
+                            continue
+
+                        # Check if row has any numeric-looking values (rates)
+                        has_numeric = any(
+                            isinstance(val, (int, float)) or
+                            (isinstance(val, str) and any(char.isdigit() for char in val) and val.replace(',', '').replace('.', '', 1).isdigit())
+                            for val in cell_values
+                        )
+
+                        # Skip rows that contain numeric values (likely record rows)
+                        if has_numeric:
+                            continue
+
+                        # Combine and clean the row text
+                        text_line = " ".join(str(val).strip() for val in cell_values if isinstance(val, str) and val.strip())
+                        if text_line and text_line not in seen_lines and len(text_line.split()) >= 3:
+                            all_remarks.append(f"{sheet_name}: {text_line}")
+                            seen_lines.add(text_line)
+
+                except Exception as e:
+                    print(f"Failed to extract additional info from '{sheet_name}': {str(e)}")
+
 
         if not data_frames:
             print("No data frames parsed from any sheet")
@@ -2266,7 +2363,9 @@ def parse_zim(file, month_year):
         final_df['POL'] = final_df['POL'].apply(standardize_pol)
         final_df = final_df[final_df['PORT'].notna() & (final_df['PORT'].str.strip() != '')]
         final_df = final_df.sort_values(by=['POL', 'PORT'])
+        final_df = format_rates_with_dollar(final_df)
         all_remarks = list(dict.fromkeys(all_remarks))
+        final_df = split_ports(final_df, port_column='PORT')
 
         print(f"Total records parsed: {len(final_df)}")
         print(f"Total remarks collected: {len(all_remarks)}")
@@ -2276,6 +2375,57 @@ def parse_zim(file, month_year):
         print(f"Error parsing ZIM MRG file: {str(e)}")
         print(f"Full traceback: {traceback.format_exc()}")
         return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), [f"Error parsing ZIM MRG file: {str(e)}"]
+
+def process_usa_sheet(sheet_name, file):
+    remarks = []
+    try:
+        df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
+        records = []
+        seen_lines = set()
+        pols = ['Nhava Sheva', 'Mundra', 'Pipavav']
+        port_row_keywords = ['NEW', 'NORFOLK', 'MIAMI', 'BOSTON', 'HOUSTON', 'BALTIMORE', 'LOS', 'TAMPA', 'MOBILE', 'ORLEANS']
+
+        for idx, row in df_raw.iterrows():
+            cells = row.dropna().astype(str).str.strip().tolist()
+            if not cells:
+                continue
+
+            first_cell_upper = cells[0].upper() if cells else ''
+
+            # Identify valid port rows (first cell looks like a US port)
+            is_port_row = any(first_cell_upper.startswith(k) for k in port_row_keywords)
+            has_rate_like_numbers = sum(1 for c in cells if any(char.isdigit() for char in c)) >= 2
+
+            if is_port_row:
+                port = cells[0].split(',')[0].strip().title()
+                last_3 = cells[-3:] if len(cells) >= 3 else [None, None, None]
+                rates = [clean_numeric_series(pd.Series([v]))[0] for v in last_3]
+
+                for pol in pols:
+                    records.append({
+                        'POL': pol,
+                        'PORT': port,
+                        '20': rates[0] if len(rates) > 0 else None,
+                        '40STD': rates[1] if len(rates) > 1 else None,
+                        '40HC': rates[2] if len(rates) > 2 else None,
+                        'Remarks': ''
+                    })
+            else:
+                # Pure remark line (not a port name, not numeric-heavy)
+                line = ' '.join(cells)
+                if len(line.split()) >= 3 and line not in seen_lines:
+                    remarks.append(line)
+                    seen_lines.add(line)
+
+        df_final = pd.DataFrame(records)
+        df_final = df_final[['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']]
+        print(f"Parsed {len(df_final)} USA records, collected {len(remarks)} remarks")
+        df_final = split_ports(df_final, port_column='PORT')
+        return df_final, remarks
+
+    except Exception as e:
+        print(f"Error in 'USA': {str(e)}")
+        return pd.DataFrame(columns=['POL', 'PORT', '20', '40STD', '40HC', 'Remarks']), [f"Error in 'USA': {str(e)}"]
     
 def parse_custom_vendor(file, month_year, selected_columns):
     try:
@@ -2341,6 +2491,9 @@ def parse_custom_vendor(file, month_year, selected_columns):
         df = df[df['PORT'].notna() & (df['PORT'].str.strip() != '')]
         df = df[df['POL'].notna() & (df['POL'].str.strip() != '')]
 
+        # Split ports in the PORT column
+        df = split_ports(df, port_column='PORT')
+
         # Extract remarks from non-data sections
         remarks = []
         try:
@@ -2359,6 +2512,47 @@ def parse_custom_vendor(file, month_year, selected_columns):
         print(f"Error parsing custom vendor file: {str(e)}")
         return pd.DataFrame(), [f"Error parsing custom vendor file: {str(e)}"]
     
+def split_ports(df, port_column='PORT'):
+    """
+    Split rows in a DataFrame where the port_column contains '/' or ';' into separate records.
+    Format all port names to have only the first letter capitalized, rest in lowercase.
+    
+    Args:
+        df (pd.DataFrame): Input DataFrame
+        port_column (str): Column name containing port names (e.g., 'PORT' or 'POD')
+    
+    Returns:
+        pd.DataFrame: DataFrame with split port records and formatted port names
+    """
+    if port_column not in df.columns:
+        return df
+    
+    # Initialize a list to hold the new rows
+    new_rows = []
+    
+    for idx, row in df.iterrows():
+        ports = str(row[port_column]).split('/')  # First split by '/'
+        ports = [port for sublist in [p.split(';') for p in ports] for port in sublist]  # Then split by ';'
+        ports = [port.strip() for port in ports if port.strip()]  # Clean up whitespace
+        
+        # If no ports after splitting (e.g., empty string), skip the row
+        if not ports:
+            continue
+            
+        # Create a new row for each port with proper capitalization
+        for port in ports:
+            # Capitalize first letter, lowercase the rest, preserving commas and other characters
+            formatted_port = port[0].upper() + port[1:].lower() if port else port
+            new_row = row.copy()
+            new_row[port_column] = formatted_port
+            new_rows.append(new_row)
+    
+    # Create a new DataFrame with the expanded rows
+    if new_rows:
+        new_df = pd.DataFrame(new_rows).reset_index(drop=True)
+        return new_df
+    return df
+
 # === FIREBASE DATA FUNCTIONS ===
 @st.cache_data
 def load_from_firestore():
@@ -2621,9 +2815,9 @@ def main_page():
     
     # Initialize selected_section in session state if not present
     if 'selected_section' not in st.session_state:
-        st.session_state.selected_section = "Upload Vendor Data"
+        st.session_state.selected_section = "Search Vendor Data"
     
-    sections = ["Upload Vendor Data", "Vendors", "Add New Vendor", "Remove Vendor", "Search Vendor Data"]
+    sections = ["Search Vendor Data","Upload Vendor Data", "Vendors", "Add New Vendor", "Remove Vendor"]
     
     # Create clickable buttons for each section
     for section in sections:
