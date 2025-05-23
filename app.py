@@ -3078,6 +3078,7 @@ port_mapping = {
     'palembang': 'Palembang',
     'panama city, door': 'Panama City',
     'panjang': 'Panjang',
+    'panjang terminal': 'Panjang Terminal',
     'pantaco': 'Pantaco',
     'paramaribo': 'Paramaribo',
     'paramaribo, suriname': 'Paramaribo',
