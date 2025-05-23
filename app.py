@@ -808,6 +808,202 @@ def parse_msc(file, month_year):
         print(f"Error in parse_msc: {str(e)}")
         return pd.DataFrame(), []
 
+def parse_msc_eur_med(file, month_year):
+    try:
+        # Load the Excel file
+        df = pd.read_excel(file, header=None)
+
+        # Locate the header row by searching for "PORTS" in the first column
+        header_row_idx = None
+        for idx, row in df.iterrows():
+            if isinstance(row.iloc[0], str) and 'PORTS' in row.iloc[0].upper():
+                header_row_idx = idx
+                break
+
+        if header_row_idx is None:
+            print("Could not find header row with 'PORTS' in the first column")
+            return pd.DataFrame(), ["Header row not found"]
+
+        # Extract remarks from rows above the header
+        remarks = []
+        for idx in range(header_row_idx):
+            row = df.iloc[idx]
+            for cell in row:
+                if pd.notna(cell) and str(cell).strip():
+                    remarks.append(str(cell).strip())
+
+        # Since "20" and "40" are in the row below "RATE", use the row after "PORTS" as the header
+        header_row = df.iloc[header_row_idx]
+        sub_header_row = df.iloc[header_row_idx + 1]
+
+        # Combine the header and sub-header to create proper column names
+        combined_columns = []
+        for main, sub in zip(header_row, sub_header_row):
+            main = str(main).strip() if pd.notna(main) else ''
+            sub = str(sub).strip() if pd.notna(sub) else ''
+            if main.upper() == 'RATE' and sub in ['20', '40', '40.0']:
+                combined_columns.append(sub)
+            elif main.upper() in ['ETS', 'FUEL EU', 'VALIDITY', 'ANCILLARIES/ SURCHARGES']:
+                combined_columns.append(main)
+            elif main.upper() == 'PORTS':
+                combined_columns.append(main)
+            else:
+                combined_columns.append(main if main else sub)
+
+        # Set the data rows starting after the sub-header row
+        df_data = df.iloc[header_row_idx + 2:].reset_index(drop=True)
+        df_data.columns = combined_columns
+
+        # Clean column names by stripping whitespace and standardizing
+        df_data.columns = [str(col).strip().upper() for col in df_data.columns]
+        
+
+        # Rename columns to match expected format, handling variations like '40.0'
+        column_mapping = {}
+        for col in df_data.columns:
+            col_upper = str(col).strip().upper()
+            if col_upper == 'PORTS':
+                column_mapping[col] = 'PORT'
+            elif '20' in col_upper:
+                column_mapping[col] = '20'
+            elif '40' in col_upper or col_upper == '40.0':
+                column_mapping[col] = '40STD'
+            elif 'ANCILLARIES/ SURCHARGES' in col_upper:
+                column_mapping[col] = 'REMARKS'
+            elif 'ETS' in col_upper:
+                column_mapping[col] = 'ETS'
+            elif 'FUEL EU' in col_upper:
+                column_mapping[col] = 'FUEL EU'
+            elif 'VALIDITY' in col_upper:
+                column_mapping[col] = 'VALIDITY'
+
+        df_data = df_data.rename(columns=column_mapping)
+
+        # Verify that required columns exist
+        required_columns = ['PORT', '20', '40STD', 'REMARKS', 'ETS', 'FUEL EU', 'VALIDITY']
+        missing_columns = [col for col in required_columns if col not in df_data.columns]
+        if missing_columns:
+            print(f"Missing columns after renaming: {missing_columns}")
+            return pd.DataFrame(), remarks + [f"Missing columns: {missing_columns}"]
+
+        # Filter out rows where PORT is empty or not a string
+        parsed = df_data[df_data['PORT'].apply(lambda x: isinstance(x, str) and x.strip() != '')].copy()
+
+        if parsed.empty:
+            print("No valid port data found after filtering")
+            return pd.DataFrame(), remarks + ["No valid port data found"]
+
+        # Clean numeric columns (20 and 40STD), ensuring no decimal points
+        def clean_numeric_series(col):
+            def clean_value(val):
+                if pd.isna(val) or val is None or str(val).strip() == '':
+                    return np.nan
+                if isinstance(val, (int, float)):
+                    return int(val)  # Convert to integer to remove decimal points
+                val_str = str(val).strip()
+                val_clean = val_str.replace(',', '').replace('$', '').replace('USD', '').strip()
+                if not val_clean.replace('.', '').replace('-', '').isdigit():
+                    print(f"Invalid value in clean_numeric_series: '{val_str}'")
+                    return np.nan
+                try:
+                    return int(float(val_clean))  # Convert to float first, then to int to remove decimal points
+                except (ValueError, TypeError) as e:
+                    print(f"Error converting value '{val_str}' to int: {str(e)}")
+                    return np.nan
+            return col.apply(clean_value)
+
+        parsed['20'] = clean_numeric_series(parsed['20'])
+        parsed['40STD'] = clean_numeric_series(parsed['40STD'])
+
+        # Explicitly convert to Int64 type to ensure integer storage and display
+        parsed['20'] = parsed['20'].astype('Int64')
+        parsed['40STD'] = parsed['40STD'].astype('Int64')
+
+        # Add default POL as Nhava Sheva
+        parsed.insert(0, 'POL', 'Nhava Sheva')
+
+        # Define standardize_pol function
+        def standardize_pol(pol):
+            if pd.isna(pol):
+                return ''
+            pol = str(pol).strip().upper()
+            mapping = {
+                'INNHV': 'Nhava Sheva',
+                'NHAVA SHEVA': 'Nhava Sheva',
+                'NHV/RQ': 'Nhava Sheva',
+                'NHAVA': 'Nhava Sheva',
+                'NSA': 'Nhava Sheva',
+                'NS': 'Nhava Sheva',
+                'MUNDRA': 'Mundra',
+                'PIPAVAV': 'Pipavav',
+                'TUTICORIN': 'Tut',
+                'TUT': 'Tut',
+                'KATTUPALLI': 'Ktp',
+                'KOLKATA': 'Ccu',
+                'CCU': 'Ccu',
+                'WRG': 'Wrg',
+                'INMUN': 'Mundra',
+                'INNSA': 'Nhava Sheva',
+                'HAZIRA': 'Hazira',
+                'HZ': 'Hazira',
+                'INHZA': 'Hazira'
+            }
+            return mapping.get(pol, pol.title())
+
+        # Apply POL standardization
+        parsed['POL'] = parsed['POL'].apply(standardize_pol)
+
+        # Clean and standardize PORT names
+        parsed['PORT'] = parsed['PORT'].astype(str).str.strip().str.title()
+
+        # Define split_ports function to handle ports with slashes
+        def split_ports(df, port_column='PORT'):
+            def split_and_clean_port(port):
+                if pd.isna(port) or not port:
+                    return ['']
+                port = str(port).strip()
+                if '/' in port:
+                    ports = [p.strip() for p in port.split('/')]
+                else:
+                    ports = [port]
+                cleaned_ports = []
+                for p in ports:
+                    if p:
+                        cleaned = p[0].upper() + p[1:].lower() if len(p) > 1 else p.upper()
+                        cleaned_ports.append(cleaned)
+                return cleaned_ports if cleaned_ports else ['']
+            
+            new_rows = []
+            for idx, row in df.iterrows():
+                ports = split_and_clean_port(row[port_column])
+                for port in ports:
+                    new_row = row.copy()
+                    new_row[port_column] = port
+                    new_rows.append(new_row)
+            return pd.DataFrame(new_rows).reset_index(drop=True)
+
+        # Split ports in the PORT column (e.g., "Sines&(ICD-BOBADELA)")
+        parsed['PORT'] = parsed['PORT'].str.replace(r'&(ICD-BOBADELA)', '', regex=True)  # Remove extra info
+        parsed = split_ports(parsed, port_column='PORT')
+
+        # Clean REMARKS, ETS, FUEL EU, and VALIDITY
+        parsed['REMARKS'] = parsed['REMARKS'].fillna('').astype(str).str.strip()
+        parsed['ETS'] = parsed['ETS'].fillna('').astype(str).str.strip()
+        parsed['FUEL EU'] = parsed['FUEL EU'].fillna('').astype(str).str.strip()
+        parsed['VALIDITY'] = parsed['VALIDITY'].fillna('').astype(str).str.strip()
+
+        # Filter out rows where both 20 and 40STD are NaN
+        parsed = parsed[~(parsed['20'].isna() & parsed['40STD'].isna())]
+
+        # Ensure desired columns in the output in the specified order
+        desired_columns = ['POL', 'PORT', '20', '40STD', 'REMARKS', 'ETS', 'FUEL EU', 'VALIDITY']
+        parsed = parsed[desired_columns]
+
+        return parsed, remarks
+
+    except Exception as e:
+        print(f"Error in parse_msc_eur_med: {str(e)}")
+        return pd.DataFrame(), [f"Error: {str(e)}"]
 
 def parse_pil(file, month_year):
     try:
@@ -2512,9 +2708,595 @@ def parse_custom_vendor(file, month_year, selected_columns):
         print(f"Error parsing custom vendor file: {str(e)}")
         return pd.DataFrame(), [f"Error parsing custom vendor file: {str(e)}"]
     
+# For demonstration, a subset of the mapping is included as a dictionary
+port_mapping = {
+    'abidjan': 'Abidjan',
+    'abu dhabi': 'Abu Dhabi',
+    'abu dhabi, abu zabi, united arab emirates': 'Abu Dhabi',
+    'acajutla': 'Acajutla, El Salvador',
+    'acajutla, el salvador': 'Acajutla, El Salvador',
+    'adelaide': 'Adelaide',
+    'aden': 'Aden',
+    'agadir': 'Agadir',
+    'ajman': 'Ajman',
+    'ajman, ras al khaymah, united arab emirates': 'Ajman',
+    'al sokhna': 'Sokhna',
+    'alexandria': 'Alexandria',
+    'alexandria (el dekheila)': 'Alexandria',
+    'algiers': 'Algiers',
+    'aliaga': 'Aliaga',
+    'altamira': 'Altamira, MX',
+    'altamira, mexico': 'Altamira, MX',
+    'annaba': 'Annaba',
+    'anqing, anqing, anhui, china': 'Anqing',
+    'antwerp': 'Antwerp',
+    'apapa': 'Apapa',
+    'aqaba': 'Aqaba',
+    'arica': 'Arica',
+    'arica, chile': 'Arica',
+    'auckland': 'Auckland',
+    'bahrain': 'Bahrain',
+    'bahrain, bahrain': 'Bahrain',
+    'balboa,panama': 'Balboa',
+    'balikpapan': 'Balikpapan',
+    'baltimore': 'Baltimore',
+    'bangkok': 'Bangkok',
+    'bangkok (bmt)': 'Bangkok',
+    'bangkok (pat)': 'Bangkok PAT',
+    'bangkok pat': 'Bangkok PAT',
+    'bangkok, thailand': 'Bangkok',
+    'bangkok,pat': 'Bangkok PAT',
+    'banjul': 'Banjul',
+    'baranquilla, colombia': 'Baranquilla',
+    'barcelona': 'Barcelona',
+    'batam': 'Batam',
+    'beicun': 'Beicun',
+    'beihai, beihai, guangxi, china': 'Beihai',
+    'beijao': 'Beijao',
+    'beijiao, shunde, guangdong, china': 'Beijao',
+    'beira': 'Beira',
+    'beirut': 'Beirut',
+    'bejaia': 'Bejaia',
+    'belawan': 'Belawan',
+    'belawan, sumatera utara, indonesia': 'Belawan',
+    'bell bay': 'Bell bay',
+    'benghazi': 'Benghazi',
+    'berbera': 'Berbera',
+    'bintulu': 'Bintulu',
+    'bissau': 'Bissau',
+    'bluff': 'Bluff',
+    'boston': 'Boston',
+    'bremerhaven': 'Bremerhaven',
+    'bridgetown': 'Bridgetown',
+    'brisbane': 'Brisbane',
+    'buenaventura': 'Buenaventura',
+    'buenaventura,colombia': 'Buenaventura',
+    'buenos aires': 'Buenos Aires',
+    'busan': 'Busan',
+    'busan, south korea': 'Busan',
+    'caacupemi asuncion': 'Asuncion',
+    'caacupemi pilar': 'Pilar',
+    'cagayan de oro': 'Cagayan De Oro',
+    'cai mep': 'Cai Mep',
+    'callao': 'Callao',
+    'callao, peru': 'Callao',
+    'cape town': 'Cape Town',
+    'capetown': 'Cape Town',
+    'cartagena': 'Cartagena',
+    'cartagena, colombia': 'Cartagena',
+    'casablanca': 'Casablanca',
+    'cat lai, hcmc': 'Cat Lai',
+    'catlai': 'Cat Lai',
+    'caucedo': 'Caucedo',
+    'caucedo, dominican republic': 'Caucedo',
+    'cebu': 'Cebu',
+    'cebu city, cebu, philippines': 'Cebu City',
+    'chancay, peru': 'Chancay',
+    'changsha': 'Changsha',
+    'changsha, changsha, hunan, china': 'Changsha',
+    'changzhou': 'Changzhou',
+    'changzhou, changzhou, jiangsu, china': 'Changzhou',
+    'charleston': 'Charleston',
+    'chattogram': 'Chattogram',
+    'chittagong': 'Chittagong',
+    'chittagong *(incl dthc)': 'Chittagong',
+    'chiwan, shekou': 'Chiwan',
+    'chongqing': 'Chongqing',
+    'chongqing, china': 'Chongqing',
+    'coega': 'Coega',
+    'colombo': 'Colombo',
+    'colombo *(incl. dthc': 'Colombo',
+    'colombo, western, sri lanka': 'Colombo',
+    'colon free zone, door': 'Colon Free Zone',
+    'conakry': 'Conakry',
+    'constanta': 'Constanta',
+    'corinto': 'Corinto',
+    'corinto, nicaragua': 'Corinto',
+    'coronel': 'Coronel',
+    'cotonou': 'Cotonou',
+    'cristobal': 'Cristobal',
+    'dakar': 'Dakar',
+    'dalian': 'Dalian',
+    'dalian, dalian, liaoning, china': 'Dalian',
+    'dammam': 'Dammam',
+    'dammam bonded re-export zone, ash sharqiyah, saudi arabia': 'Dammam Bonded Zone',
+    'dammam, ash sharqiyah, saudi arabia': 'Dammam',
+    'danang': 'Danang',
+    'dar es salaam': 'Dar es salaam',
+    'dar-es-salaam': 'Dar es salaam',
+    'davao': 'Davao',
+    'diego suarez': 'Diego suarez',
+    'djibouti': 'Djibouti',
+    'djjib': 'Djibouti',
+    'dongguan, dongguan, guangdong, china': 'Dongguan',
+    'dou men, zuhai province': 'Dou men, Zuhai Province',
+    'douala': 'Douala',
+    'dubai, dubai, united arab emirates': 'Jebel Ali',
+    'durban': 'Durban',
+    'dzaae': 'Annaba',
+    'dzalg': 'Alger',
+    'dzorn': 'Oran',
+    'dzski': 'Skikda',
+    'egaly': 'Alexandria',
+    'egpsd': 'Port Said',
+    'ensenada': 'Ensenada',
+    'ensenada,mexico': 'Ensenada',
+    'esbcn': 'Barcelona',
+    'esvlc': 'Valencia',
+    'fangcheng, fangchenggang, guangxi, china': 'Fangcheng',
+    'felixstowe': 'Felixstowe',
+    'fos sur mer': 'Fos sur mer',
+    'foshan jiujiang': 'Foshan jiujiang',
+    'foshan, foshan, guangdong, china': 'Foshan',
+    'freeport': 'Freeport',
+    'freetown': 'Freetown',
+    'fremantle': 'Fremantle',
+    'frfos': 'Fos Sur Mer',
+    'fukuyama': 'Fukuyama',
+    'fuqing, fuzhou, fujian, china': 'Fuqing',
+    'fuzhou, fuzhou, fujian, china': 'Fuzhou',
+    'gao ming': 'Gao ming',
+    'gao yao': 'Gao yao',
+    'gaolan, zhuhai, zhuhai, guangdong, china': 'Gaolan, Zhuhai',
+    'gaolan, zuhai province': 'Gaolan, Zhuhai',
+    'gaoming, foshan, guangdong, china': 'Gaoming, Foshan, Guangdong',
+    'gaosha': 'Gaosha',
+    'gemlik': 'Gemlik',
+    'genoa': 'Genoa',
+    'georgetown': 'Georgetown',
+    'georgetown, guyana': 'Georgetown',
+    'grpir': 'Piraeus',
+    'grskg': 'Thessaloniki',
+    'guangzhou, guangzhou, guangdong, china': 'Guangzhou, Guangzhou, Guangdong',
+    'guatemala city': 'Guatemala city',
+    'guayaquil': 'Guayaquil',
+    'guayaquil, equador': 'Guayaquil',
+    'hai phong': 'Haiphong',
+    'hai phong, vietnam': 'Haiphong',
+    'haikou': 'Haikou',
+    'haikou, haikou, hainan, china': 'Haikou, Haikou, Hainan',
+    'haiphong': 'Haiphong',
+    'hakata': 'Hakata',
+    'halifax': 'Halifax',
+    'hamad': 'Hamad',
+    'hamad, qatar': 'Hamad',
+    'hamburg': 'Hamburg',
+    'haungpu': 'Haungpu',
+    'hefei': 'Hefei',
+    'hefei, hefei, anhui, china': 'Hefei',
+    'hiroshima': 'Hiroshima',
+    'ho chi minh': 'Ho Chi Minh City',
+    'ho chi minh, vietnam': 'Ho Chi Minh City',
+    'hochiminh vict': 'Ho Chi Minh City, VICT',
+    'hong kong': 'Hong Kong',
+    'hong kong, hong kong, china': 'Hong Kong',
+    'hongkong': 'Hong Kong',
+    'hongwan, zuhai province': 'Hongwan, zuhai province',
+    'houston': 'Houston',
+    'huadu': 'Huadu',
+    'huadu, guangzhou, guangdong, china': 'Huadu, Guangzhou, Guangdong',
+    'huangpu': 'Huangpu',
+    'huangpu, guangzhou, guangdong, china': 'Huangpu, Guangzhou, Guangdong',
+    'humen': 'Humen',
+    'humen, dongguan, guangdong, china': 'Humen, Dongguan, Guangdong',
+    'icd dhaka': 'Icd dhaka',
+    'icd phuoc long 1': 'Icd phuoc long 1',
+    'icd phuoc long 3': 'Icd phuoc long 3',
+    'imbitumba': 'Imbitumba',
+    'incheon': 'Incheon',
+    'inchon': 'Incheon',
+    'inchon, south korea': 'Incheon',
+    'iquique': 'Iquique',
+    'iquique, chile': 'Iquique',
+    'iskenderun': 'Iskenderun',
+    'istanbul': 'Istanbul',
+    'istanbul (ambarli-kumport)': 'Istanbul',
+    'istanbul (haydarpasa)': 'Istanbul',
+    'itajai': 'Itajai',
+    'itapoa': 'Itapoa',
+    'itgoa': 'Genoa',
+    'itsal': 'Salerno',
+    'itspe': 'La spezia',
+    'izmir': 'Izmir',
+    'izmit': 'Izmit',
+    'izmit (evyap)': 'Izmit',
+    'jacksonville': 'Jacksonville',
+    'jakarta': 'Jakarta',
+    'jakarta, indonesia': 'Jakarta',
+    'jebel ali': 'Jebel Ali',
+    'jebel ali, dubai, united arab emirates': 'Jebel Ali',
+    'jeddah': 'Jeddah',
+    'jiangmen new port': 'Jiangmen',
+    'jiangmen, jiangmen, guangdong, china': 'Jiangmen',
+    'jiangyin, wuxi, jiangsu, china': 'Jiangyin, Wuxi, Jiangsu',
+    'jiangyin,fujian': 'Jiangyin,Fujian',
+    'jiaoxin': 'Jiaoxin',
+    'jiaoxin, guangzhou, guangdong, china': 'Jiaoxin',
+    'jiaxing, jiaxing, zhejiang, china': 'Jiaxing',
+    'jing zhou': 'Jingzhou',
+    'jingzhou, jingzhou, hubei, china': 'Jingzhou',
+    'jinzhou': 'Jingzhou',
+    'jiujiang': 'Jiujiang',
+    'jiujiang, jiujiang, jiangxi, china': 'Jiujiang',
+    'joaqj': 'Aqaba',
+    'jubail': 'Jubail',
+    'jubail, ash sharqiyah, saudi arabia': 'Jubail',
+    'kaiping, jiangmen, guangdong, china': 'Kaiping, Jiangmen, Guangdong',
+    'kaohsiung': 'Kaohsiung',
+    'kaohsiung, taiwan': 'Kaohsiung',
+    'kaouhsiung': 'Kaohsiung',
+    'kawasaki': 'Kawasaki',
+    'keelung': 'Keelung',
+    'keelung, taiwan': 'Keelung',
+    'khoms': 'Khoms',
+    'king abdullah port - kap': 'King abdullah port',
+    'kingston': 'Kingston',
+    'kingston, jamaica': 'Kingston',
+    'kobe': 'Kobe',
+    'kobe, hyogo-ken, japan': 'Kobe',
+    'kota kinabalu': 'Kota kinabalu',
+    'kribi': 'Kribi',
+    'kuching': 'Kuching',
+    'kwangyang': 'Kwangyang',
+    'la guaira - euro': 'La Guaira - EURO',
+    'la spezia': 'La spezia',
+    'laem cha bang': 'Laem cha bang',
+    'laem chabang': 'Laem cha bang',
+    'laem chabang, chon buri, thailand': 'Laem cha bang',
+    'lanshi, foshan, guangdong, china': 'All Separate',
+    'lat kra bang': 'Lat Krabang',
+    'lat krabang': 'Lat Krabang',
+    'lat krabang, bangkok, thailand': 'Lat Krabang',
+    'latkra bang': 'Lat Krabang',
+    'lautoka': 'Lautoka',
+    'lazaro cardenas': 'Lazaro cardenas',
+    'lazaro cardenas, mexico': 'Lazaro cardenas',
+    'lbbey': 'Beirut',
+    'lekki': 'Lekki',
+    'lian hua shan': 'Lian hua shan',
+    'lianhuashan, guangzhou, guangdong, china': 'Lian hua shan',
+    'lianyungang': 'Lianyungang',
+    'lianyungang, lianyungang, jiangsu, china': 'Lianyungang',
+    'libreville': 'Libreville',
+    'lirquen chile': 'Lirquen',
+    'liudu, yunfu, guangdong, china': 'Liudu',
+    'lobito': 'Lobito',
+    'lome': 'Lome',
+    'long beach': 'Long beach',
+    'longoni': 'Longoni',
+    'luanda': 'Luanda',
+    'luzhou, luzhou, sichuan, china': 'Luzhou',
+    'lyben': 'Benghazi',
+    'lymra': 'Misurata',
+    'lytip': 'Tripoli',
+    'lyttleton': 'Lyttleton',
+    'macas': 'Casablanca',
+    'majunga': 'Majunga',
+    'male *(incl pad)': 'Male',
+    'manaus': 'Manaus',
+    'manila north': 'Manila north',
+    'manila south': 'Manila south',
+    'manila, metro manila, philippines': 'Manila',
+    'manila,north': 'Manila north',
+    'manzanillo': 'Manzanillo, MX',
+    'manzanillo, panama': 'Manzanillo, PA',
+    'manzanillo,mx': 'Manzanillo, MX',
+    'maputo': 'Maputo',
+    'matadi': 'Matadi',
+    'matsuyama': 'Matsuyama',
+    'mawei, fuzhou': 'Mawei',
+    'mawei, fuzhou, fujian, china': 'Mawei',
+    'melbourne': 'Melbourne',
+    'mersin': 'Mersin',
+    'mexico city': 'Mexico city',
+    'mindelo': 'Mindelo',
+    'miri': 'Miri',
+    'misurata': 'Misurata',
+    'mizushima': 'Mizushima',
+    'mobile': 'Mobile',
+    'mogadishu': 'Mogadishu',
+    'moin': 'Moin',
+    'moji': 'Moji',
+    'mombasa': 'Mombasa',
+    'monrovia': 'Monrovia',
+    'montevideo': 'Montevideo',
+    'montreal': 'Montreal',
+    'moroni': 'Moroni',
+    'mukalla': 'Mukalla',
+    'nacala': 'Nacala',
+    'nador': 'Nador',
+    'nagoya': 'Nagoya',
+    'nagoya, aichi, japan': 'Nagoya',
+    'naha okinawa': 'Naha okinawa',
+    'namibe': 'Namibe',
+    'nanchang': 'Nanchang',
+    'nanchang, nanchang, jiangxi, china': 'Nanchang',
+    'nanjing': 'Nanjing',
+    'nanjing, nanjing, jiangsu, china': 'Nanjing',
+    'nansha': 'Nansha',
+    'nansha new port': 'Nansha New Port',
+    'nansha, guangzhou, guangdong, china': 'Nansha',
+    'nantong': 'Nantong',
+    'nantong, nantong, jiangsu, china': 'Nantong',
+    'napier': 'Napier',
+    'nassau': 'Nassau',
+    'navegantes': 'Navegantes',
+    'nelson': 'Nelson',
+    'new orleans': 'New orleans',
+    'new york': 'New york',
+    'ningbo': 'Ningbo',
+    'ningbo, ningbo, zhejiang, china': 'Ningbo',
+    'norfolk': 'Norfolk',
+    'nouadhibou': 'Nouadhibou',
+    'nouakchott': 'Nouakchott',
+    'noumea': 'Noumea',
+    'oakland': 'Oakland',
+    'onne': 'Onne',
+    'oran': 'Oran',
+    'osaka': 'Osaka',
+    'osaka, japan': 'Osaka',
+    'paita': 'Paita',
+    'palembang': 'Palembang',
+    'panama city, door': 'Panama City',
+    'panjang': 'Panjang',
+    'pantaco': 'Pantaco',
+    'paramaribo': 'Paramaribo',
+    'paramaribo, suriname': 'Paramaribo',
+    'paranagua': 'Paranagua',
+    'pasir gudang': 'Pasir gudang',
+    'pasir gudang, johor, malaysia': 'Pasir gudang',
+    'pasirgudang': 'Pasir gudang',
+    'pecem': 'Pecem',
+    'penang': 'Penang',
+    'penang, pulau pinang, malaysia': 'Penang',
+    'philadelphia': 'Philadelphia',
+    'phnompenh': 'Phnom Penh',
+    'pointe de galets': 'Pointe de galets',
+    'pointe noire': 'Pointe noire',
+    'pontianak': 'Pontianak',
+    'port au prince': 'Port au prince',
+    'port au prince,haiti': 'Port au prince',
+    'port chalmers': 'Port chalmers',
+    'port everglades': 'Port everglades',
+    'port kelang': 'Port Klang',
+    'port klang (north)': 'Port Klang North',
+    'port klang (west)': 'Port Klang West',
+    'port klang, selangor, malaysia': 'Port Klang',
+    'port louis': 'Port louis',
+    'port of spain': 'Port of spain',
+    'port of spain, trindad & tobago': 'Port of Spain',
+    'port said': 'Port said',
+    'port sudan': 'Port sudan',
+    'posorja,ecuador': 'Posorja',
+    'poti': 'Poti',
+    'praia': 'Praia',
+    'psa, dongguan': 'Psa, dongguan',
+    'puerto barrios': 'Puerto barrios',
+    'puerto cabello - euro': 'Puerto Cabello - EURO',
+    'puerto caldera': 'Puerto caldera',
+    'puerto caldera, costa rica': 'Puerto caldera',
+    'puerto cortes': 'Puerto cortes',
+    'puerto cortes,honduras': 'Puerto Cortes',
+    'puerto limon, costa rica': 'Puerto Limon',
+    'puerto quetzal': 'Puertal Quetzal',
+    'puerto quetzal, guatemala': 'Puertal Quetzal',
+    'pusan': 'Pusan',
+    'qingdao': 'Qingdao',
+    'qingdao, qingdao, shandong, china': 'Qingdao',
+    'qingyuan': 'Qingyuan',
+    'qinzhou': 'Qinzhou',
+    'qinzhou, qinzhou, guangxi, china': 'Qinzhou',
+    'qui nhon': 'Qui nhon',
+    'quingdao': 'Qingdao',
+    'quy nhon': 'Qui nhon',
+    'ras al khaimah': 'Ras al khaimah',
+    'ras al khaimah, ras al khaymah, united arab emirates': 'Ras al khaimah',
+    'rio de janeiro': 'Rio De Janeiro',
+    'rio grande': 'Rio Grande',
+    'rio haina': 'Rio Haina',
+    'rio haina, dominican republic': 'Rio Haina',
+    'riyadh': 'Riyadh',
+    'riyadh, ar riyad, saudi arabia': 'Riyadh',
+    'rodman': 'Rodman',
+    'rongqi, shunde, guangdong, china': 'Rongqi, Shunde',
+    'rosario': 'Rosario',
+    'sajed': 'Jeddah',
+    'salalah': 'Salalah',
+    'salalah, zufar, oman': 'Salalah',
+    'salvador (de bahia)': 'Salvador',
+    'samut prakan (bangkok), samut prakan, thailand': 'Bangkok (Samut Prakan)',
+    'san antonio': 'San antonio',
+    'san antonio, chile': 'San Antonio',
+    'san juan, puerto rico': 'San Juan',
+    'san lorenzo, honduras': 'San Lorenzo',
+    'sandakan': 'Sandakan',
+    'shanghai': 'Shanghai',
+    'san-pedro': 'San-pedro',
+    'sanshan': 'Sanshan',
+    'sanshan, foshan, guangdong, china': 'Sanshan',
+    'sanshui new port': 'Sanshui New Port',
+    'sanshui, foshan, guangdong, china': 'Sanshui',
+    'santo tomas de castilla, guatemala': 'Santo tomas de castilla',
+    'santos': 'Santos',
+    'savannah': 'Savannah',
+    'sdpzu': 'Port Sudan',
+    'seattle': 'Seattle',
+    'semarang': 'Semarang',
+    'semarang, jawa tengah, indonesia': 'Semarang',
+    'sendai, miyagi': 'Sendai',
+    'shanghai, china': 'Shanghai',
+    'shantou, shantou, guangdong, china': 'Shantou',
+    'sharjah': 'Sharjah',
+    'sharjah, sharjah, united arab emirates': 'Sharjah',
+    'shatian': 'Shatian',
+    'shatian, dongguan, guangdong, china': 'Shatian, dongguan',
+    'shekhou': 'Shekou',
+    'shekou': 'Shekou',
+    'shekou, shenzhen, china': 'Shekou',
+    'shekou, shenzhen, guangdong, china': 'Shekou',
+    'shimizu': 'Shimizu',
+    'shuaiba': 'Shuaiba',
+    'shuaiba, kuwait': 'Shuaiba',
+    'shunde leliu wharf': 'Shunde Leliu Wharf',
+    'shunde new port': 'Shunde new port',
+    'shunde, shunde, guangdong, china': 'Shunde',
+    'shuwaikh': 'Shuwaikh',
+    'shuwaikh, kuwait': 'Shuwaikh',
+    'si hui (ma fang)': 'Si Hui',
+    'sibu': 'Sibu',
+    'sihanoukville': 'Sihanoukville',
+    'sihanoukville, sihanoukville, cambodia': 'Sihanoukville',
+    'singapore': 'Singapore',
+    'singapore, singapore': 'Singapore',
+    'skikda': 'Skikda',
+    'sohar': 'Sohar',
+    'sohar, masqat, oman': 'Sohar',
+    'sokhna port': 'Sokhna port',
+    'suape': 'Suape',
+    'subic bay': 'Subic bay',
+    'surabaya': 'Surabaya',
+    'surabaya, jawa timur, indonesia': 'Surabaya',
+    'suva': 'Suva',
+    'sydney': 'Sydney',
+    'syltk': 'Latakia',
+    'taicang': 'Taicang',
+    'taicang, suzhou, jiangsu, china': 'Taicang',
+    'taichung': 'Taichung',
+    'taichung, taiwan': 'Taichung',
+    'taipei': 'Taipei',
+    'takoradi': 'Takoradi',
+    'tamatave': 'Tamatave',
+    'tanga': 'Tanga',
+    'taoyuan': 'Taoyuan',
+    'tauranga': 'Tauranga',
+    'tawao': 'Tawao',
+    'tema': 'Tema',
+    'tianjin, xingang': 'Tianjin, Xingang',
+    'tincan': 'Tincan',
+    'tnsfa': 'Sfax',
+    'tnsus': 'Sousse',
+    'tokuyama': 'Tokuyama',
+    'tokyo': 'Tokyo',
+    'tokyo, japan': 'Tokyo',
+    'tongling, tongling, anhui, china': 'Tongling',
+    'toronto': 'Toronto',
+    'trege': 'Eregli',
+    'trgeb': 'Gebze',
+    'trgem': 'Gemlik',
+    'trisk': 'Iskenderun',
+    'trmer': 'Mersin',
+    'trmrp': 'Marport',
+    'tunis': 'Tunis',
+    'ulsan': 'Ulsan',
+    'umm al qaiwain': 'Umm Al Qawain',
+    'umm al qawain, umm al qaywayn, united arab emirates': 'Umm Al Qawain',
+    'umm qasr *(incl. dthc)': 'Umm Qasr',
+    'umm qasr north port, iraq': 'Umm Qasr North',
+    'valencia': 'Valencia',
+    'valparaiso, chile': 'Valparaiso',
+    'vancouver': 'Vancouver',
+    'veracruz': 'Veracruz',
+    'veracruz, mexico': 'Veracruz',
+    'vila do conde': 'Vila do conde',
+    'vitoria': 'Vitoria',
+    'walvis bay': 'Walvis bay',
+    'wellington': 'Wellington',
+    'wenzhou': 'Wenzhou',
+    'wenzhou, wenzhou, zhejiang, china': 'Wenzhou',
+    'wu zhou': 'Wu zhou',
+    'wuhan': 'Wuhan',
+    'wuhan, wuhan, hubei, china': 'Wuhan',
+    'wuhu': 'Wuhu',
+    'wuhu, wuhu, anhui, china': 'Wuhu',
+    'wuxi': 'Wuxi',
+    'xiamen': 'Xiamen',
+    'xiamen, xiamen, fujian, china': 'Xiamen',
+    'xiaolan': 'Xiaolan',
+    'xinfeng, liwan, guangzhou, guangdong, china': 'Xinfeng, liwan',
+    'xingang': 'Xingang',
+    'xingang, tianjin, china': 'Xingang, Tianjin',
+    'xinhui': 'Xinhui',
+    'xinhui, jiangmen, guangdong, china': 'Xinhui, Jiangmen',
+    'yang zhou': 'Yang zhou',
+    'yangon': 'Yangon',
+    'yangon, yangon, myanmar': 'Yangon',
+    'yangpu pt': 'Yangpu',
+    'yangpu, danzhou, hainan, china': 'Yangpu',
+    'yangzhou, yangzhou, jiangsu, china': 'Yangzhou',
+    'yantai, yantai, shandong, china': 'Yantai',
+    'yantian': 'Yantian',
+    'yantian, shenzhen, china': 'Yantian',
+    'yantian, shenzhen, guangdong, china': 'Yantian',
+    'yibin, yibin, sichuan, china': 'Yibin',
+    'yichang': 'Yichang',
+    'yichang, yichang, hubei, china': 'Yichang',
+    'yokkaichi': 'Yokkaichi',
+    'yokkaichi, mie, japan': 'Yokkaichi',
+    'yokohama': 'Yokohama',
+    'yokohama, kanagawa-ken, japan': 'Yokohama',
+    'yueyang': 'Yueyang',
+    'yueyang, yueyang, hunan, china': 'Yueyang',
+    'zanzibar': 'Zanzibar',
+    'zarate': 'Zarate',
+    'zhangjiagang': 'Zhangjiagang',
+    'zhanjiang': 'Zhangjiagang',
+    'zhanjiang, zhanjiang, guangdong, china': 'Zhangjiagang',
+    'zhaoqing': 'Zhaoqing',
+    'zhaoqing new port': 'Zhaoqing New Port',
+    'zhaoqing, zhaoqing, guangdong, china': 'Zhaoqing',
+    'zhapu': 'Zhapu',
+    'zhapu, pinghu, jiaxing, zhejiang, china': 'Zhapu',
+    'zhongshan': 'Zhongshan',
+    'zhongshan, zhongshan, guangdong, china': 'Zhongshan',
+    'zhuhai, zhuhai, guangdong, china': 'Zhuhai'
+}
+
+def normalize_text(text):
+    """
+    Normalize text for consistent comparison (lowercase, strip whitespace).
+    """
+    if pd.isna(text):
+        return ''
+    return ' '.join(str(text).lower().strip().split())
+
+def map_port_name(port):
+    """
+    Map a port name to its standardized name using the port_mapping dictionary.
+    If no match is found, return the original port name with proper capitalization.
+    """
+    if not port or pd.isna(port):
+        return ''
+    normalized_port = normalize_text(port)
+    mapped_port = port_mapping.get(normalized_port, port)
+    # Capitalize first letter, lowercase the rest
+    if mapped_port:
+        return mapped_port[0].upper() + mapped_port[1:].lower() if len(mapped_port) > 1 else mapped_port.upper()
+    return port[0].upper() + port[1:].lower() if len(port) > 1 else port.upper()
+
 def split_ports(df, port_column='PORT'):
     """
     Split rows in a DataFrame where the port_column contains '/' or ';' into separate records.
+    Map each port name to its standardized name from the master sheet.
     Format all port names to have only the first letter capitalized, rest in lowercase.
     
     Args:
@@ -2522,7 +3304,7 @@ def split_ports(df, port_column='PORT'):
         port_column (str): Column name containing port names (e.g., 'PORT' or 'POD')
     
     Returns:
-        pd.DataFrame: DataFrame with split port records and formatted port names
+        pd.DataFrame: DataFrame with split and mapped port records
     """
     if port_column not in df.columns:
         return df
@@ -2531,20 +3313,21 @@ def split_ports(df, port_column='PORT'):
     new_rows = []
     
     for idx, row in df.iterrows():
-        ports = str(row[port_column]).split('/')  # First split by '/'
-        ports = [port for sublist in [p.split(';') for p in ports] for port in sublist]  # Then split by ';'
-        ports = [port.strip() for port in ports if port.strip()]  # Clean up whitespace
+        # Split ports by '/' or ';'
+        ports = str(row[port_column]).split('/')
+        ports = [port for sublist in [p.split(';') for p in ports] for port in sublist]
+        ports = [port.strip() for port in ports if port.strip()]
         
-        # If no ports after splitting (e.g., empty string), skip the row
+        # If no ports after splitting, skip the row
         if not ports:
             continue
             
-        # Create a new row for each port with proper capitalization
+        # Create a new row for each port with mapped and formatted name
         for port in ports:
-            # Capitalize first letter, lowercase the rest, preserving commas and other characters
-            formatted_port = port[0].upper() + port[1:].lower() if port else port
+            # Map the port name using the master sheet mapping
+            mapped_port = map_port_name(port)
             new_row = row.copy()
-            new_row[port_column] = formatted_port
+            new_row[port_column] = mapped_port
             new_rows.append(new_row)
     
     # Create a new DataFrame with the expanded rows
@@ -2560,7 +3343,7 @@ def load_from_firestore():
     data = {
         "MSC": {}, "Wan Hai": {}, "Emirates": {}, "ONE MRG": {}, "HMM MRG": {},
         "OOCL": {}, "PIL MRG": {}, "ARKAS MRG": {}, "Interasia": {}, "Cosco-Gulf": {}, 
-        "Cosco-WCSA & CB": {}, "Cosco-Africa": {}, "Turkon": {}, "Cosco-Fareast": {}, "ZIM MRG": {}
+        "Cosco-WCSA & CB": {}, "Cosco-Africa": {}, "Turkon": {}, "Cosco-Fareast": {}, "ZIM MRG": {}, "MSC-EUR MED": {}
     }
     all_pods = set()
     all_pols = set()
@@ -2888,7 +3671,8 @@ def main_page():
                     "Cosco-Africa": parse_cosco_africa,
                     "Turkon": parse_turkon,
                     "Cosco-Fareast": parse_cosco_fareast,
-                    "ZIM MRG": parse_zim
+                    "ZIM MRG": parse_zim,
+                    "MSC-EUR MED": parse_msc_eur_med
                 }
                 try:
                     custom_vendors_ref = db.collection('custom_vendors')
@@ -3013,12 +3797,53 @@ def main_page():
             current_month = current_date.strftime("%b")
             current_year = str(current_date.year)
 
+            #Initialize session state for POD input
+            if 'pod_input_text' not in st.session_state:
+                st.session_state.pod_input_text = ""
+            if 'filtered_pod_suggestions' not in st.session_state:
+                st.session_state.filtered_pod_suggestions = st.session_state.pod_suggestions
+            if 'pod_selected' not in st.session_state:
+                st.session_state.pod_selected = ""
             with col1:
                 pol_input = st.selectbox("POL", [""] + st.session_state.pol_suggestions,
                                         format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
             with col2:
-                pod_input = st.selectbox("POD/PORT", [""] + st.session_state.pod_suggestions,
-                                        format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
+                all_ports = sorted(set(st.session_state.get("pod_suggestions", [])))
+
+                # ✅ Initialize filtered suggestions if not already present
+                if "filtered_pod_suggestions" not in st.session_state:
+                    st.session_state.filtered_pod_suggestions = all_ports
+
+                # ✅ Display dropdown only for filtered matches
+                pod_input = st.selectbox(
+                    "POD/PORT",
+                    [""] + st.session_state.filtered_pod_suggestions,
+                    format_func=lambda x: "" if x == "" else x,
+                    key="pod_selectbox",
+                    help="Select a POD/PORT (exact match only)",
+                    index=0
+                )
+
+                # ✅ On selection change, update filtered suggestions using exact match logic
+                if pod_input != st.session_state.get("pod_selected", ""):
+                    st.session_state.pod_selected = pod_input
+
+                    if pod_input.strip():
+                        input_lower = pod_input.strip().lower()
+
+                        # ✅ Exact match filtering (case-insensitive)
+                        filtered_suggestions = [
+                            pod for pod in st.session_state.pod_suggestions
+                            if pod and pod.strip() and pod.lower() == input_lower
+                        ]
+
+                        st.session_state.filtered_pod_suggestions = sorted(filtered_suggestions)
+                    else:
+                        st.session_state.filtered_pod_suggestions = all_ports
+
+                    st.rerun()
+
+
             with col3:
                 data, _, _ = load_from_firestore()
                 vendors = sorted(data.keys())  # Extract vendor names from the data dictionary
