@@ -544,6 +544,14 @@ def parse_one(file, month_year):
                                 lambda x: str(int(float(x))) if pd.notna(x) and x != '' and float(x) != 0 else np.nan
                             )
 
+                        # Clean ROUTING column if it exists
+                        if 'ROUTING' in parsed_df.columns:
+                            parsed_df['ROUTING'] = parsed_df['ROUTING'].astype(str).str.strip().replace('nan', '')
+
+                        # Clean SERVICE column if it exists
+                        if 'SERVICE' in parsed_df.columns:
+                            parsed_df['SERVICE'] = parsed_df['SERVICE'].astype(str).str.strip().replace('nan', '')
+
                         # Exclude rows where all rate columns are NaN
                         rate_cols = [col for col in ['20', '40STD', '40HC'] if col in parsed_df.columns]
                         if rate_cols:
@@ -603,9 +611,11 @@ def parse_one(file, month_year):
                     ('40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"): '40HC',
                     ("40'", '40d', '40std', '40 std', '40 ', "40'd"): '40STD',
                     ('country',): 'POD COUNTRY',
-                    ('remark', 'rate structure', 'surcharges group'): 'REMARKS'
+                    ('remark', 'rate structure', 'surcharges group'): 'REMARKS',
+                    ('route', 'routing'): 'ROUTING',
+                    ('service', 'service scope'): 'SERVICE'
                 }
-                keywords = ['FPD', 'PORT', 'DEST', 'DESTINATION', "20'", "40'", 'HCD']
+                keywords = ['FPD', 'PORT', 'DEST', 'DESTINATION', "20'", "40'", 'HCD', 'ROUTE', 'ROUTING', 'SERVICE', 'SERVICE SCOPE']
                 required_cols = ['PORT', '20', '40STD', '40HC']
                 dfs, _ = parse_table(pd.read_excel(file, sheet_name=sheet_name, header=None), sheet_name, keywords, col_map, required_cols)
                 data.extend(dfs)
@@ -618,9 +628,11 @@ def parse_one(file, month_year):
                     ('oft 40',): '40STD',
                     ('oft hc',): '40HC',
                     ('expiry date',): 'EXPIRY DATE',
-                    ('remarks', 'rate structure', 'surcharges group', 'include surcharge'): 'REMARKS'
+                    ('remarks', 'rate structure', 'surcharges group', 'include surcharge'): 'REMARKS',
+                    ('route', 'routing'): 'ROUTING',
+                    ('service', 'service scope'): 'SERVICE'
                 }
-                keywords = ['DEL DESCRIPTION', 'OFT 20', 'OFT 40', 'OFT HC']
+                keywords = ['DEL DESCRIPTION', 'OFT 20', 'OFT 40', 'OFT HC', 'ROUTE', 'ROUTING', 'SERVICE', 'SERVICE SCOPE']
                 required_cols = ['PORT', '20', '40STD', '40HC']
                 dfs, _ = parse_table(pd.read_excel(file, sheet_name=sheet_name, header=None), sheet_name, keywords, col_map, required_cols)
                 for df in dfs:
@@ -636,9 +648,11 @@ def parse_one(file, month_year):
                     ('40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"): '40HC',
                     ("40'", '40d', '40std', '40 std', '40 ', "40'd"): '40STD',
                     ('remark', 'rate structure', 'surcharges group'): 'REMARKS',
-                    ('t/t',): 'TRANSIT TIME'
+                    ('t/t',): 'TRANSIT TIME',
+                    ('route', 'routing'): 'ROUTING',
+                    ('service', 'service scope'): 'SERVICE'
                 }
-                keywords = ['PORT', "20'", "40'", "40'HC", 'DEST', 'DESTINATION']
+                keywords = ['PORT', "20'", "40'", "40'HC", 'DEST', 'DESTINATION', 'ROUTE', 'ROUTING', 'SERVICE', 'SERVICE SCOPE']
                 required_cols = ['PORT', '20', '40STD', '40HC']
                 dfs, _ = parse_table(pd.read_excel(file, sheet_name=sheet_name, header=None), sheet_name, keywords, col_map, required_cols)
                 data.extend(dfs)
@@ -651,9 +665,11 @@ def parse_one(file, month_year):
                     ('40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"): '40HC',
                     ("40'", '40d', '40std', '40 std', '40 ', "40'd"): '40STD',
                     ('remark', 'rate structure', 'surcharges group'): 'REMARKS',
-                    ('t/t',): 'TRANSIT TIME'
+                    ('t/t',): 'TRANSIT TIME',
+                    ('route', 'routing'): 'ROUTING',
+                    ('service', 'service scope'): 'SERVICE'
                 }
-                keywords = ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION']
+                keywords = ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION', 'ROUTE', 'ROUTING', 'SERVICE', 'SERVICE SCOPE']
                 required_cols = ['PORT', '20', '40STD', '40HC']
                 dfs, _ = parse_table(pd.read_excel(file, sheet_name=sheet_name, header=None), sheet_name, keywords, col_map, required_cols)
                 data.extend(dfs)
@@ -666,9 +682,11 @@ def parse_one(file, month_year):
                     ('40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"): '40HC',
                     ("40'", '40d', '40std', '40 std', '40 ', "40'd"): '40STD',
                     ('remark', 'rate structure', 'surcharges group'): 'REMARKS',
-                    ('t/t',): 'TRANSIT TIME'
+                    ('t/t',): 'TRANSIT TIME',
+                    ('route', 'routing'): 'ROUTING',
+                    ('service', 'service scope'): 'SERVICE'
                 }
-                keywords = ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION', 'PORTS']
+                keywords = ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION', 'PORTS', 'ROUTE', 'ROUTING', 'SERVICE', 'SERVICE SCOPE']
                 required_cols = ['PORT', '20', '40STD', '40HC']
                 dfs, _ = parse_table(pd.read_excel(file, sheet_name=sheet_name, header=None), sheet_name, keywords, col_map, required_cols, is_latam=True)
                 data.extend(dfs)
@@ -680,9 +698,11 @@ def parse_one(file, month_year):
                     ("20'", '20d', '20dc', '20 dc', '20 ', "20'd"): '20',
                     ('40hc', 'hcd', '40 hc', '40high', '40 high', "40'hc"): '40HC',
                     ("40'", '40d', '40std', '40 std', '40 ', "40'd"): '40STD',
-                    ('remark', 'rate structure', 'surcharges group'): 'REMARKS'
+                    ('remark', 'rate structure', 'surcharges group'): 'REMARKS',
+                    ('route', 'routing'): 'ROUTING',
+                    ('service', 'service scope'): 'SERVICE'
                 }
-                keywords = ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION', 'PORTS']
+                keywords = ['PORT', "20'", "40'", "40'HC", 'REMARKS', 'DEST', 'DESTINATION', 'PORTS', 'ROUTE', 'ROUTING', 'SERVICE', 'SERVICE SCOPE']
                 required_cols = ['PORT', '20', '40STD', '40HC']
                 dfs, _ = parse_table(pd.read_excel(file, sheet_name=sheet_name, header=None), sheet_name, keywords, col_map, required_cols, is_latam=True)
                 data.extend(dfs)
@@ -704,10 +724,10 @@ def parse_one(file, month_year):
             final_df = pd.concat(aligned_dfs, ignore_index=True)
             final_df = final_df.drop_duplicates(subset=['POL', 'PORT', '20', '40STD', '40HC', 'Sheet'], keep='first')
 
-            # Define the desired column order with TRANSIT TIME and ROUTING
+            # Define the desired column order with TRANSIT TIME, ROUTING, and SERVICE
             desired_column_order = [
                 'POL', 'PORT', '20', '40STD', '40HC', 'POD COUNTRY',
-                'EXPIRY DATE', 'TRANSIT TIME', 'ROUTING', 'REMARKS', 'Sheet'
+                'SERVICE', 'EXPIRY DATE', 'TRANSIT TIME', 'ROUTING', 'REMARKS', 'Sheet'
             ]
 
             # Reorder columns according to desired_column_order
@@ -729,7 +749,6 @@ def parse_one(file, month_year):
             info.append(f"* Sheet : {sheets[-1]}")
         info.append(f"Error in parse_one: {str(e)}")
         return pd.DataFrame(), info
-
 
 
 def parse_msc(file, month_year):
@@ -3100,7 +3119,7 @@ port_mapping = {
     'puerto limon, costa rica': 'Puerto Limon',
     'puerto quetzal': 'Puertal Quetzal',
     'puerto quetzal, guatemala': 'Puertal Quetzal',
-    'pusan': 'Pusan',
+    'pusan': 'Busan',
     'qingdao': 'Qingdao',
     'qingdao, qingdao, shandong, china': 'Qingdao',
     'qingyuan': 'Qingyuan',
@@ -3797,53 +3816,12 @@ def main_page():
             current_month = current_date.strftime("%b")
             current_year = str(current_date.year)
 
-            #Initialize session state for POD input
-            if 'pod_input_text' not in st.session_state:
-                st.session_state.pod_input_text = ""
-            if 'filtered_pod_suggestions' not in st.session_state:
-                st.session_state.filtered_pod_suggestions = st.session_state.pod_suggestions
-            if 'pod_selected' not in st.session_state:
-                st.session_state.pod_selected = ""
             with col1:
                 pol_input = st.selectbox("POL", [""] + st.session_state.pol_suggestions,
                                         format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
             with col2:
-                all_ports = sorted(set(st.session_state.get("pod_suggestions", [])))
-
-                # ✅ Initialize filtered suggestions if not already present
-                if "filtered_pod_suggestions" not in st.session_state:
-                    st.session_state.filtered_pod_suggestions = all_ports
-
-                # ✅ Display dropdown only for filtered matches
-                pod_input = st.selectbox(
-                    "POD/PORT",
-                    [""] + st.session_state.filtered_pod_suggestions,
-                    format_func=lambda x: "" if x == "" else x,
-                    key="pod_selectbox",
-                    help="Select a POD/PORT (exact match only)",
-                    index=0
-                )
-
-                # ✅ On selection change, update filtered suggestions using exact match logic
-                if pod_input != st.session_state.get("pod_selected", ""):
-                    st.session_state.pod_selected = pod_input
-
-                    if pod_input.strip():
-                        input_lower = pod_input.strip().lower()
-
-                        # ✅ Exact match filtering (case-insensitive)
-                        filtered_suggestions = [
-                            pod for pod in st.session_state.pod_suggestions
-                            if pod and pod.strip() and pod.lower() == input_lower
-                        ]
-
-                        st.session_state.filtered_pod_suggestions = sorted(filtered_suggestions)
-                    else:
-                        st.session_state.filtered_pod_suggestions = all_ports
-
-                    st.rerun()
-
-
+                pod_input = st.selectbox("POD/PORT", [""] + st.session_state.pod_suggestions,
+                                        format_func=lambda x: "" if x == "" else x, help="Start typing to see suggestions")
             with col3:
                 data, _, _ = load_from_firestore()
                 vendors = sorted(data.keys())  # Extract vendor names from the data dictionary
