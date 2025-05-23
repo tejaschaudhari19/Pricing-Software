@@ -2742,6 +2742,7 @@ port_mapping = {
     'al sokhna': 'Sokhna',
     'alexandria': 'Alexandria',
     'alexandria (el dekheila)': 'Alexandria',
+    'alexandria (old port)': 'Alexandria',
     'algiers': 'Algiers',
     'aliaga': 'Aliaga',
     'altamira': 'Altamira, MX',
@@ -2762,6 +2763,7 @@ port_mapping = {
     'bangkok': 'Bangkok',
     'bangkok (bmt)': 'Bangkok',
     'bangkok (pat)': 'Bangkok PAT',
+    'Bangkok - PAT': 'Bangkok PAT',
     'bangkok pat': 'Bangkok PAT',
     'bangkok, thailand': 'Bangkok',
     'bangkok,pat': 'Bangkok PAT',
@@ -3078,7 +3080,6 @@ port_mapping = {
     'palembang': 'Palembang',
     'panama city, door': 'Panama City',
     'panjang': 'Panjang',
-    'panjang terminal': 'Panjang Terminal',
     'pantaco': 'Pantaco',
     'paramaribo': 'Paramaribo',
     'paramaribo, suriname': 'Paramaribo',
@@ -3158,6 +3159,7 @@ port_mapping = {
     'sanshui, foshan, guangdong, china': 'Sanshui',
     'santo tomas de castilla, guatemala': 'Santo tomas de castilla',
     'santos': 'Santos',
+    'Santos (sp)': 'Santos',
     'savannah': 'Savannah',
     'sdpzu': 'Port Sudan',
     'seattle': 'Seattle',
@@ -3487,12 +3489,12 @@ def query_firestore(pol, pod, equipment, month=None, year=None):
             if 'POL' in df.columns and pol:
                 df = df[df['POL'].str.lower() == pol.lower()]
 
-            # Apply POD filter with partial match
+            # Apply POD filter with exact match
             if 'PORT' in df.columns and pod:
-                df = df[df['PORT'].str.contains(pod, case=False, na=False)]
+                df = df[df['PORT'].str.lower() == pod.lower()]
                 df = df[df['PORT'].ne('') & df['PORT'].ne('None')]
             elif 'POD' in df.columns and pod:
-                df = df[df['POD'].str.contains(pod, case=False, na=False)]
+                df = df[df['POD'].str.lower() == pod.lower()]
                 df = df[df['POD'].ne('') & df['POD'].ne('None')]
                 if not df.empty:
                     df = df.rename(columns={'POD': 'PORT'})
