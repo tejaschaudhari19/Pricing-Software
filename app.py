@@ -474,7 +474,7 @@ def parse_one(file, month_year):
                                 break
 
                         df = pd.read_excel(file, sheet_name=sheet_name, skiprows=data_start_row, nrows=max_rows)
-                        df.columns = df.columns.str.strip().str.replace("’", "'").str.replace("‘", "'")
+                        df.columns = df.columns.str.strip().str.replace("â€™", "'").str.replace("â€˜", "'")
                         print(f"{sheet_name} columns: {list(df.columns)}")
 
                         # Skip if the DataFrame is empty or has no valid columns
@@ -483,7 +483,7 @@ def parse_one(file, month_year):
                             current_row = data_start_row + 1
                             continue
 
-                        # For LATAM or LUX Service, handle remarks columns (combine REMARK and last column if both exist)
+                        # For LATAM or LUX Service, handle remarks columns
                         if is_latam and len(df.columns) > 1:
                             last_col = df.columns[-1]
                             remark_cols = [col for col in df.columns if col.lower() == 'remark']
@@ -523,7 +523,8 @@ def parse_one(file, month_year):
                             parsed_df = parsed_df[~parsed_df['PORT'].astype(str).str.lower().str.contains('total|summary', na=False)]
                             parsed_df = parsed_df[parsed_df['PORT'].notna()]
                             parsed_df = parsed_df[parsed_df['PORT'].astype(str).str.strip() != '']
-                            parsed_df['PORT'] = parsed_df['PORT'].astype(str).str.strip()
+                            # Normalize PORT column to have first letter capitalized
+                            parsed_df['PORT'] = parsed_df['PORT'].apply(map_port_name)
                         else:
                             print(f"PORT column missing in {sheet_name} after mapping")
                             current_row = data_start_row + max_rows
@@ -594,7 +595,6 @@ def parse_one(file, month_year):
                             info.append("")  # Add a blank line after each sheet's remarks
                     except Exception as e:
                         print(f"Error parsing table in {sheet_name} at row {data_start_row}: {str(e)}")
-                        # If info doesn't already have the sheet name, add it
                         if not info or info[-1] != f"* Sheet : {sheet_name}":
                             info.append(f"* Sheet : {sheet_name}")
                         info.append(f"Error parsing table in {sheet_name} at row {data_start_row}: {str(e)}")
@@ -636,6 +636,9 @@ def parse_one(file, month_year):
                 required_cols = ['PORT', '20', '40STD', '40HC']
                 dfs, _ = parse_table(pd.read_excel(file, sheet_name=sheet_name, header=None), sheet_name, keywords, col_map, required_cols)
                 for df in dfs:
+                    # Normalize PORT column for EUR and MED sheet
+                    if 'PORT' in df.columns:
+                        df['PORT'] = df['PORT'].apply(map_port_name)
                     if 'EXPIRY DATE' in df.columns:
                         df['EXPIRY DATE'] = pd.to_datetime(df['EXPIRY DATE'], errors='coerce').dt.strftime('%Y-%m-%d')
                 data.extend(dfs)
@@ -724,27 +727,30 @@ def parse_one(file, month_year):
             final_df = pd.concat(aligned_dfs, ignore_index=True)
             final_df = final_df.drop_duplicates(subset=['POL', 'PORT', '20', '40STD', '40HC', 'Sheet'], keep='first')
 
-            # Define the desired column order with TRANSIT TIME, ROUTING, and SERVICE
+            # Define the desired column order
             desired_column_order = [
                 'POL', 'PORT', '20', '40STD', '40HC', 'POD COUNTRY',
                 'SERVICE', 'EXPIRY DATE', 'TRANSIT TIME', 'ROUTING', 'REMARKS', 'Sheet'
             ]
 
-            # Reorder columns according to desired_column_order
+            # Reorder columns
             final_columns = [col for col in desired_column_order if col in final_df.columns]
             remaining_columns = [col for col in final_df.columns if col not in desired_column_order]
             final_columns.extend(remaining_columns)
             final_df = final_df[final_columns]
+
+            # Apply split_ports to handle ports with slashes or semicolons
+            final_df = split_ports(final_df, port_column='PORT')
+
         else:
             final_df = pd.DataFrame()
 
-        # Remove duplicates in info and filter short lines (but keep sheet names and blank lines)
+        # Remove duplicates in info
         info = list(dict.fromkeys([line for line in info if len(line.split()) > 2 or line.startswith("* Sheet :") or line == ""]))
         return final_df, info
 
     except Exception as e:
         print(f"Error in parse_one: {str(e)}")
-        # Ensure the error is added to info with a sheet context if possible
         if sheets and info and not info[-1].startswith("* Sheet :"):
             info.append(f"* Sheet : {sheets[-1]}")
         info.append(f"Error in parse_one: {str(e)}")
@@ -2763,7 +2769,10 @@ port_mapping = {
     'bangkok': 'Bangkok',
     'bangkok (bmt)': 'Bangkok',
     'bangkok (pat)': 'Bangkok PAT',
-    'Bangkok - PAT': 'Bangkok PAT',
+    'bangkok - PAT': 'Bangkok PAT',
+    'bangkok - pat': 'Bangkok PAT',
+    'bangkok (samut prakan)': 'Bangkok', #oocl
+    'bangkok sathai': 'Bangkok', #zim
     'bangkok pat': 'Bangkok PAT',
     'bangkok, thailand': 'Bangkok',
     'bangkok,pat': 'Bangkok PAT',
