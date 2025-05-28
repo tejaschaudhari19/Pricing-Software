@@ -2757,6 +2757,7 @@ port_mapping = {
     'anqing, anqing, anhui, china': 'Anqing',
     'antwerp': 'Antwerp',
     'apapa': 'Apapa',
+    'apapa, lagos': 'Apapa',
     'aqaba': 'Aqaba',
     'arica': 'Arica',
     'arica, chile': 'Arica',
@@ -2769,8 +2770,8 @@ port_mapping = {
     'bangkok': 'Bangkok',
     'bangkok (bmt)': 'Bangkok',
     'bangkok (pat)': 'Bangkok PAT',
-    'bangkok - PAT': 'Bangkok PAT',
     'bangkok - pat': 'Bangkok PAT',
+    'bangkok-pat': 'Bangkok PAT',
     'bangkok (samut prakan)': 'Bangkok', #oocl
     'bangkok sathai': 'Bangkok', #zim
     'bangkok pat': 'Bangkok PAT',
@@ -3168,7 +3169,7 @@ port_mapping = {
     'sanshui, foshan, guangdong, china': 'Sanshui',
     'santo tomas de castilla, guatemala': 'Santo tomas de castilla',
     'santos': 'Santos',
-    'Santos (sp)': 'Santos',
+    'santos (sp)': 'Santos',
     'savannah': 'Savannah',
     'sdpzu': 'Port Sudan',
     'seattle': 'Seattle',
